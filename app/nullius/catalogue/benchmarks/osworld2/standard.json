@@ -139,7 +139,7 @@
     },
     "max_steps": {
       "label": "Steps per task",
-      "summary": "The agent's step limit. default: each agent's own, as its wrapper runs it.",
+      "summary": "The agent's step limit. default: each agent's own, as its wrapper runs it; 100 through the computer port.",
       "setups": [
         "original",
         "yours"

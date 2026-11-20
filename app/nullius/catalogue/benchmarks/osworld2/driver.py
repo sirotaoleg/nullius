@@ -3,15 +3,16 @@
 It runs the Original setup, the null control and an agent (runner.py).
 OSWorld-V2's own code at the tested commit ($NULLIUS_UPSTREAM) loads, acts and
 scores, in processes of its own; this driver imports none of it. Each unit's
-script runs in the unit's folder, so its logs and results stay with the
-trial. Every process gets the
-assets folder (_assets) as OSWORLD_FILE_BASE_URL and the startup folder first on
-PYTHONPATH. Mock websites (websites.py), GitLab (gitlab_server.py) and a proxy
+script runs in the unit's folder, so its logs and results stay with the trial.
+Every process gets the assets folder (_assets) as OSWORLD_FILE_BASE_URL and the
+startup folder first on PYTHONPATH. Mock websites (websites.py), GitLab (gitlab_server.py) and a proxy
 (proxy.py) are the unit's services.
 
 units    - every task of the dataset, as domain__id
 setup    - the task's instruction, for the null control, from nop.py
-           --instruction: loading a task runs its code, so it runs apart
+           --instruction: loading a task runs its code, so it runs apart; for
+           an agent, runner.py started and, at the loop's first step, the
+           prompt with the password and date lines and the MCP server computer
 answer   - the Original setup: the agent option's script (agents.json) on the
            one task, its model calls through the unit's relay, whose stop file
            ends the episode with DONE
@@ -265,15 +266,17 @@ def _arm(pgid, dir, vms):
     """A reaper that starts once this process closes its pipe or dies; the locks it is given stay held until it ends."""
     r, w = os.pipe()
     try:
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--reap", str(pgid), dir, "vms" if vms else "group"],
-                         stdin=r, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-                         pass_fds=websites.held_fds() + tuple(_PORTS) + tuple(_OWN))
+        proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--reap", str(pgid), dir,
+                                 "vms" if vms else "group"],
+                                stdin=r, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                                pass_fds=websites.held_fds() + tuple(_PORTS) + tuple(_OWN))
     except BaseException:
         os.close(w)
         raise
     finally:
         os.close(r)
     _ARMED[pgid] = w
+    return proc
 
 
 def _reaper(pgid, dir, vms, seen=()):
@@ -1364,11 +1367,15 @@ def _agent_setup(domain, eid, dir):
     if eid in ASKS_USER:
         raise EnvironmentSetupError(f"task {eid} has a simulated user, which agent.computer/v1 does not reach")
     where, held = _runner_dir(dir), contextlib.ExitStack()
-    sock_dir = life_r = life_w = p = lock = None
+    sock_dir = life_r = life_w = p = lock = reaper = None
+    done, seen = threading.Event(), []
     log = os.path.join(where, "runner.log")
     try:
         with _set_up():
             _fresh(where)
+            for name in ("computer-calls.jsonl", "computer-prepare.jsonl", "runner.json"):
+                if os.path.lexists(os.path.join(where, name)):
+                    os.replace(os.path.join(where, name), os.path.join(where, f"{name}.{time.time_ns()}"))
             vm = _vm(where, domain, eid)
             instruction = _task(where, domain, eid)["instruction"]
             services = _services(held, where, domain, eid, until)
@@ -1398,7 +1405,8 @@ def _agent_setup(domain, eid, dir):
         with open(log, "a") as f:
             p = subprocess.Popen(argv, cwd=where, env=env, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                  start_new_session=True, pass_fds=(life_r,))
-        _arm(p.pid, where, True)
+        reaper = _arm(p.pid, where, True)
+        threading.Thread(target=_noting, args=(where, done, seen), daemon=True).start()
         t0 = time.time()
         while p.poll() is None and not os.path.exists(ready) and time.time() - t0 < START_SECONDS \
                 and time.time() < until:
@@ -1408,11 +1416,18 @@ def _agent_setup(domain, eid, dir):
                 if STARTED in f.read():
                     break
     except BaseException:
-        if p is not None and p.pid not in _ARMED:
-            with contextlib.suppress(OSError):
-                os.killpg(p.pid, signal.SIGKILL)
+        done.set()
+        if p is not None and reaper is None:
+            try:
+                reap(p.pid, where, True)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    os.killpg(p.pid, signal.SIGKILL)
+                with contextlib.suppress(RuntimeError, OSError):
+                    _remove_vms(where)
+            p.wait()
         elif p is not None:
-            _reaper(p.pid, where, True)
+            _hand_over(p, reaper, where, seen)
         for fd in (life_r, life_w):
             if fd is not None:
                 os.close(fd)
@@ -1424,14 +1439,16 @@ def _agent_setup(domain, eid, dir):
         if lock is not None:
             lock.close()
     os.close(life_r)
-    RUNNERS[where] = {"p": p, "sock_dir": sock_dir, "life": life_w, "held": held}
+    RUNNERS[where] = {"p": p, "sock_dir": sock_dir, "life": life_w, "held": held, "reaper": reaper, "done": done,
+                      "seen": seen}
     with open(os.path.join(where, "runner.json"), "w", encoding="utf-8") as f:
         json.dump({"pid": p.pid}, f)
     try:
         while not os.path.exists(ready):
-            if p.poll() is not None:
-                said = _not_ready(log) or _tail(log, p.returncode)[1]
-                raise EnvironmentSetupError(f"the runner exited {p.returncode} before the agent's first step: {said}")
+            ended = _exited(p)
+            if ended is not None:
+                said = _not_ready(log) or _tail(log, ended)[1]
+                raise EnvironmentSetupError(f"the runner exited {ended} before the agent's first step: {said}")
             if CLOSED.wait(0.2):
                 raise EnvironmentSetupError("the runner was stopped: the unit's time ran out")
             if time.time() > until:
@@ -1463,7 +1480,7 @@ def task_given(unit, dir, **_):
     os.write(entry["life"], _port().TASK_GIVEN + b"\n")
     t0 = time.time()
     while not os.path.exists(said):
-        if entry["p"].poll() is not None or time.time() - t0 > GIVEN_SECONDS or CLOSED.wait(0.05):
+        if _exited(entry["p"]) is not None or time.time() - t0 > GIVEN_SECONDS or CLOSED.wait(0.05):
             raise RuntimeError("the runner did not say that the window before the task is closed")
     with open(said, encoding="utf-8") as f:
         ok = json.load(f).get("ok")
@@ -1480,13 +1497,38 @@ def _let_go(entry):
         entry["life"] = None
 
 
+def _exited(p):
+    if p.returncode is not None:
+        return p.returncode
+    try:
+        info = os.waitid(os.P_PID, p.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except ChildProcessError:
+        return -signal.SIGKILL
+    if info is None:
+        return None
+    return info.si_status if info.si_code == os.CLD_EXITED else -info.si_status
+
+
+def _reaped(reaper, p):
+    if reaper is not None:
+        reaper.wait()
+    p.wait()
+
+
+def _hand_over(p, reaper, where, seen):
+    if p.pid in _ARMED:
+        _reaper(p.pid, where, True, seen)
+    threading.Thread(target=_reaped, args=(reaper, p), daemon=True).start()
+
+
 def _release(where):
     entry = RUNNERS.pop(where, None)
     if entry is None:
         return
     _let_go(entry)
+    entry["done"].set()
     try:
-        _reaper(entry["p"].pid, where, True)
+        _hand_over(entry["p"], entry["reaper"], where, entry["seen"])
     finally:
         entry["held"].close()
         shutil.rmtree(entry["sock_dir"], ignore_errors=True)
@@ -1526,9 +1568,9 @@ def _agent_score(where, dir, domain, eid):
         with contextlib.suppress(OSError):
             os.write(entry["life"], _port().TURN_END + b"\n")
     p, until = entry["p"], time.time() + _score_seconds() - 2 * CLOSE_SECONDS
-    while p.poll() is None and time.time() < until and not CLOSED.wait(0.5):
+    while _exited(p) is None and time.time() < until and not CLOSED.wait(0.5):
         pass
-    code = p.poll()
+    code = _exited(p)
     _release(where)
     log = os.path.join(where, "runner.log")
     if CLOSED.is_set() and code is None:
@@ -1555,6 +1597,7 @@ def _agent_score(where, dir, domain, eid):
     for name, data in [("result.txt", result)] + sorted(kept.items()):
         with open(os.path.join(out, name), "wb") as f:
             f.write(data)
+    _grader_failed(log)
     scored = _scored(out, "runner.py, run_single_example, DesktopEnv.evaluate")
     _unread(scored["reward"], log, retried=eid in RETRIES_SITE_READS)
     scored["detail"]["tool_calls"] = len(kept["computer-calls.jsonl"].splitlines())

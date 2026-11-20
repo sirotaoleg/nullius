@@ -38,7 +38,7 @@ Long-horizon, real-world tasks on an Ubuntu desktop, across its apps, each in a 
 | Option | Values, default in bold | What it sets | Setups |
 |---|---|---|---|
 | `agent` | **`m3` (MiniMax M3)**, `muse_spark` (Muse Spark) | Which of OSWorld-V2's own agents runs: each its script as published, with its own prompts, tools and history, asking the model it is published with. | `original` |
-| `max_steps` | e.g. `500`, default `default` | The agent's step limit. default: each agent's own, as its wrapper runs it. | `original`, `yours` |
+| `max_steps` | e.g. `500`, default `default` | The agent's step limit. default: each agent's own, as its wrapper runs it; 100 through the computer port. | `original`, `yours` |
 | `thinking` | **`off`**, `adaptive` | Whether M3 thinks. The paper ran it adaptive. | `original` |
 | `vm_provider` | **`docker`** | Where the VMs run. | `original`, `yours` |
 | `websites` | e.g. `10.213.0.1.nip.io`, default `none` | Where the mock websites, and GitLab with them, are served. Needed by the tasks that use them. | `original`, `yours` |
@@ -62,7 +62,7 @@ Long-horizon, real-world tasks on an Ubuntu desktop, across its apps, each in a 
 - Tasks 103 and 104 are not supported: they stay in the datasets, and an agent's unit ends in an error.
 - A slow or loaded machine, or a run across 16:00 UTC (the VM's midnight), can change scores.
 - The null control scores above 0 on 015, 076, 090 and 092, and on 077 in some runs.
-- Only OSWorld-V2's own M3 and Muse Spark run it; no other agent yet.
+- An agent through the computer port gets no task with the LLM grader, the simulated user or several phases: its unit ends in an error.
 - Fetch the gated tasks and prepare the machine first: see OSWorld2 machine setup in the docs.
 
 ## Cite

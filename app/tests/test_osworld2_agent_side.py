@@ -67,6 +67,14 @@ def alive(pid: int) -> bool:
         return False
 
 
+def state(pid: int):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
 def gone(pid: int, seconds: float = 20.0) -> bool:
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -169,6 +177,20 @@ class AgentSide(unittest.TestCase):
         os.environ.update({"NULLIUS_OPTION_" + k.upper(): v for k, v in options.items()})
         self.addCleanup(lambda: [os.environ.pop("NULLIUS_OPTION_" + k.upper(), None) for k in options])
 
+    def docker(self) -> str:
+        calls, docker = os.path.join(self.tmp, "docker.calls"), os.path.join(os.environ["PATH"], "docker")
+        with open(docker, "w") as f:
+            f.write(f'#!/bin/sh\necho "$@" >> {calls}\n')
+        os.chmod(docker, 0o755)
+        return calls
+
+    def docker_ps(self, calls) -> bool:
+        try:
+            with open(calls) as f:
+                return "ps -a -q --no-trunc --filter ancestor=" + self.d.PROVIDER_IMAGE in f.read().splitlines()
+        except FileNotFoundError:
+            return False
+
     def setup(self, unit=UNIT) -> dict:
         return self.d.setup(unit=unit, dir=self.ws, participant="agent")
 
@@ -228,12 +250,15 @@ class AgentSide(unittest.TestCase):
 
     def test_the_turns_end_ends_the_loop_with_done(self):
         self.options(max_steps="50")
+        calls = self.docker()
         s = self.session(self.setup())
+        self.assertTrue(self.docker_ps(calls))
         self.d.task_given(unit=UNIT, dir=self.ws)
         s.call("click", x=10, y=20)
         s.close()
-        t0 = time.time()
+        runner, t0 = self.runner(), time.time()
         score = self.score()
+        self.assertEqual(state(runner), "Z")
         self.assertLess(time.time() - t0, 30)
         self.assertEqual(score["reward"], 0.0)
         self.assertEqual([(t["step_num"], t["action"]) for t in self.traj()], [(1, CLICK), (2, "DONE")])
@@ -255,6 +280,22 @@ class AgentSide(unittest.TestCase):
         self.assertEqual(self.d.end(unit=UNIT, dir=self.ws), {})
         with self.assertRaisesRegex(RuntimeError, "no runner of this driver's for this unit"):
             self.score()
+
+    def test_a_runner_whose_reaper_cannot_start_is_ended_and_its_vms_removed_at_once(self):
+        arm, started, calls = self.d._arm, [], self.docker()
+
+        def failing(pgid, dir, vms):
+            if not vms:
+                return arm(pgid, dir, vms)
+            started.append(pgid)
+            raise OSError("no reaper")
+
+        self.d._arm, self.d.SWEEPS = failing, (0,)
+        with self.assertRaisesRegex(OSError, "no reaper"):
+            self.setup()
+        self.assertIsNone(state(started[0]))
+        self.assertEqual(self.d.RUNNERS, {})
+        self.assertTrue(self.docker_ps(calls))
 
     def test_tasks_the_port_cannot_serve_are_refused_before_a_vm(self):
         for unit, said in (("tasks__003", "LLM grader"), ("tasks__024", "simulated user")):
