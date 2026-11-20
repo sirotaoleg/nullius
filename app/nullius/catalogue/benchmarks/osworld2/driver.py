@@ -344,7 +344,7 @@ def reap(pgid, dir, vms, seen=(), start=None):
         snapshot.join(SNAPSHOT_SECONDS)
     ended = False
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        if start is not None and _start_time(pgid) != start:
+        if start is not None and _start_time(pgid) not in (start, None):
             ended = True
             break
         try:
@@ -1475,9 +1475,10 @@ def _agent_setup(domain, eid, dir):
     if not said.get("ok"):
         _release(where)
         raise EnvironmentSetupError("the runner's setup failed: " + str(said.get("error")))
-    lines = [instruction, PASSWORD_LINE.format(password=said.get("password") or "")]
+    lines = [instruction]
     if isinstance(said.get("date"), str) and re.fullmatch(r"\d{4}-\d\d-\d\d", said["date"]):
         lines.append(DATE_LINE.format(date=said["date"]))
+    lines.append(PASSWORD_LINE.format(password=said.get("password") or ""))
     pipe = os.path.join(os.path.dirname(os.path.abspath(_port().__file__)), "computer_pipe.py")
     return {"prompt": "\n\n".join(lines), "agent_seconds": AGENT_SECONDS,
             "mcp": [{"name": "computer", "server": "computer", "args": [pipe, os.path.join(sock_dir, "s")]}]}

@@ -224,8 +224,9 @@ class AgentSide(unittest.TestCase):
     def test_the_v2_loop_takes_empty_several_and_ending_steps(self):
         self.options(max_steps="6")
         setup = self.setup()
-        self.assertEqual(setup["prompt"], INSTRUCTION + "\n\nIf you need a password for sudo, the password of the "
-                         f"computer is '{self.d.PASSWORD}'.\n\nThe current date is 2031-02-03.")
+        self.assertEqual(setup["prompt"], INSTRUCTION + "\n\nThe current date is 2031-02-03.\n\nIf you need a password "
+                         f"for sudo, the password of the computer is '{self.d.PASSWORD}'.")
+        self.assertEqual(setup["prompt"].split("\n\n")[-1], self.d.PASSWORD_LINE.format(password=self.d.PASSWORD))
         self.assertEqual([(m["name"], m["server"]) for m in setup["mcp"]], [("computer", "computer")])
         s = self.session(setup)
         self.assertEqual(value(s.call("upload", path="/tmp/agent/in.txt",
@@ -287,6 +288,18 @@ class AgentSide(unittest.TestCase):
         self.assertTrue(alive(p.pid))
         self.d.reap(p.pid, self.tmp, False, start=start)
         self.assertTrue(gone(p.pid))
+
+    def test_the_reaper_ends_a_group_whose_leader_is_gone(self):
+        leader = subprocess.Popen([PYTHON, "-c", "import subprocess, sys; c = subprocess.Popen([sys.executable, '-c', "
+                                   "'import time; time.sleep(60)']); print(c.pid, flush=True)"],
+                                  start_new_session=True, stdout=subprocess.PIPE, text=True)
+        child = int(leader.stdout.readline())
+        start = self.d._start_time(leader.pid)
+        leader.wait()
+        leader.stdout.close()
+        self.assertTrue(alive(child))
+        self.d.reap(leader.pid, self.tmp, False, start=start)
+        self.assertTrue(gone(child))
 
     def test_the_units_end_ends_a_runner_that_never_reached_score(self):
         setup = self.setup()
