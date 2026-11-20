@@ -271,6 +271,15 @@ class AgentSide(unittest.TestCase):
         self.assertEqual([(t["step_num"], t["action"]) for t in self.traj()], [(1, CLICK), (2, "DONE")])
         self.assertEqual([e["last"] for e in self.events("evaluate")], ["DONE"])
 
+    def test_a_step_with_no_action_and_an_end_ends_the_task(self):
+        s = self.session(self.setup())
+        self.d.task_given(unit=UNIT, dir=self.ws)
+        self.assertEqual(value(s.call("step", actions=[], end="fail", response="no such file")),
+                         {"steps_left": 99, "done": True})
+        s.close()
+        self.assertEqual(self.score()["reward"], 0.0)
+        self.assertEqual([(t["step_num"], t["action"], t["response"]) for t in self.traj()], [(1, "FAIL", "no such file")])
+
     def test_a_multi_phase_task_is_refused_before_the_agent(self):
         with self.assertRaisesRegex(self.d.EnvironmentSetupError, "a multi-phase task: agent.computer/v1 gives the "
                                                                   "agent one instruction"):
