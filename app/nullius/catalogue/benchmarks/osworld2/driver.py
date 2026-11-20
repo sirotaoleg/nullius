@@ -262,12 +262,12 @@ def _read():
     LINES.put(None)
 
 
-def _arm(pgid, dir, vms):
+def _arm(pgid, dir, vms, start=None):
     """A reaper that starts once this process closes its pipe or dies; the locks it is given stay held until it ends."""
     r, w = os.pipe()
     try:
         proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--reap", str(pgid), dir,
-                                 "vms" if vms else "group"],
+                                 "vms" if vms else "group"] + ([str(start)] if start is not None else []),
                                 stdin=r, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
                                 pass_fds=websites.held_fds() + tuple(_PORTS) + tuple(_OWN))
     except BaseException:
@@ -324,7 +324,15 @@ def _gone(pgid, seconds):
     return False
 
 
-def reap(pgid, dir, vms, seen=()):
+def _start_time(pid):
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def reap(pgid, dir, vms, seen=(), start=None):
     """SIGTERM to the group, GRACE seconds, SIGKILL; then the unit's containers removed and its api_logs packed.
     Volumes are read before the signals: the upstream removes a container without its volume."""
     seen = [v for v in seen if VOLUME.fullmatch(v)]
@@ -336,6 +344,9 @@ def reap(pgid, dir, vms, seen=()):
         snapshot.join(SNAPSHOT_SECONDS)
     ended = False
     for sig in (signal.SIGTERM, signal.SIGKILL):
+        if start is not None and _start_time(pgid) != start:
+            ended = True
+            break
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:
@@ -1405,10 +1416,10 @@ def _agent_setup(domain, eid, dir):
         with open(log, "a") as f:
             p = subprocess.Popen(argv, cwd=where, env=env, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                  start_new_session=True, pass_fds=(life_r,))
-        reaper = _arm(p.pid, where, True)
+        reaper = _arm(p.pid, where, True, _start_time(p.pid))
         threading.Thread(target=_noting, args=(where, done, seen), daemon=True).start()
         t0 = time.time()
-        while p.poll() is None and not os.path.exists(ready) and time.time() - t0 < START_SECONDS \
+        while _exited(p) is None and not os.path.exists(ready) and time.time() - t0 < START_SECONDS \
                 and time.time() < until:
             if CLOSED.wait(1):
                 _stop(p, log, "the runner", True)
@@ -1664,7 +1675,8 @@ def _score(unit, dir, transcript=None, answer=None, setup=None, judge=None, **_)
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--reap"]:
-        reap(int(sys.argv[2]), sys.argv[3], sys.argv[4:5] == ["vms"], sys.stdin.read().split())
+        reap(int(sys.argv[2]), sys.argv[3], sys.argv[4:5] == ["vms"], sys.stdin.read().split(),
+             int(sys.argv[5]) if sys.argv[5:] else None)
         sys.exit(0)
     if sys.argv[1:2] == ["--ward"]:
         gitlab_server.ward(int(sys.argv[2]), sys.argv[3])

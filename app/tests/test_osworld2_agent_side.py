@@ -184,12 +184,18 @@ class AgentSide(unittest.TestCase):
         os.chmod(docker, 0o755)
         return calls
 
-    def docker_ps(self, calls) -> bool:
-        try:
-            with open(calls) as f:
-                return "ps -a -q --no-trunc --filter ancestor=" + self.d.PROVIDER_IMAGE in f.read().splitlines()
-        except FileNotFoundError:
-            return False
+    def docker_ps(self, calls, seconds: float = 10.0) -> bool:
+        deadline = time.time() + seconds
+        while True:
+            try:
+                with open(calls) as f:
+                    if "ps -a -q --no-trunc --filter ancestor=" + self.d.PROVIDER_IMAGE in f.read().splitlines():
+                        return True
+            except FileNotFoundError:
+                pass
+            if time.time() > deadline:
+                return False
+            time.sleep(0.1)
 
     def setup(self, unit=UNIT) -> dict:
         return self.d.setup(unit=unit, dir=self.ws, participant="agent")
@@ -268,8 +274,19 @@ class AgentSide(unittest.TestCase):
         with self.assertRaisesRegex(self.d.EnvironmentSetupError, "a multi-phase task: agent.computer/v1 gives the "
                                                                   "agent one instruction"):
             self.setup("tasks__902")
+        self.assertEqual(state(self.runner()), "Z")
         self.assertFalse(os.path.exists(self.log) and self.events("started"))
         self.assertEqual(self.d.RUNNERS, {})
+
+    def test_the_reaper_signals_only_the_process_it_was_given(self):
+        p = subprocess.Popen([PYTHON, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        start = self.d._start_time(p.pid)
+        self.d.reap(p.pid, self.tmp, False, start=start + 1)
+        self.assertTrue(alive(p.pid))
+        self.d.reap(p.pid, self.tmp, False, start=start)
+        self.assertTrue(gone(p.pid))
 
     def test_the_units_end_ends_a_runner_that_never_reached_score(self):
         setup = self.setup()
@@ -284,9 +301,9 @@ class AgentSide(unittest.TestCase):
     def test_a_runner_whose_reaper_cannot_start_is_ended_and_its_vms_removed_at_once(self):
         arm, started, calls = self.d._arm, [], self.docker()
 
-        def failing(pgid, dir, vms):
+        def failing(pgid, dir, vms, start=None):
             if not vms:
-                return arm(pgid, dir, vms)
+                return arm(pgid, dir, vms, start)
             started.append(pgid)
             raise OSError("no reaper")
 
