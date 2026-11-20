@@ -38,7 +38,7 @@ Long-horizon, real-world tasks on an Ubuntu desktop, across its apps, each in a 
 | Option | Values, default in bold | What it sets | Setups |
 |---|---|---|---|
 | `agent` | **`m3` (MiniMax M3)**, `muse_spark` (Muse Spark) | Which of OSWorld-V2's own agents runs: each its script as published, with its own prompts, tools and history, asking the model it is published with. | `original` |
-| `max_steps` | e.g. `500`, default `default` | The agent's step limit. default: each agent's own, as its wrapper runs it. | `original` |
+| `max_steps` | e.g. `500`, default `default` | The agent's step limit. default: each agent's own, as its wrapper runs it. | `original`, `yours` |
 | `thinking` | **`off`**, `adaptive` | Whether M3 thinks. The paper ran it adaptive. | `original` |
 | `vm_provider` | **`docker`** | Where the VMs run. | `original`, `yours` |
 | `websites` | e.g. `10.213.0.1.nip.io`, default `none` | Where the mock websites, and GitLab with them, are served. Needed by the tasks that use them. | `original`, `yours` |

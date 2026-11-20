@@ -1,9 +1,10 @@
 """OSWorld-V2's driver for the Nullius standard (JSON lines on stdin and stdout).
 
-It runs the Original setup and the null control. OSWorld-V2's own code at the
-tested commit ($NULLIUS_UPSTREAM) loads, acts and scores, in processes of its
-own; this driver imports none of it. Each unit's script runs in the unit's
-folder, so its logs and results stay with the trial. Every process gets the
+It runs the Original setup, the null control and an agent (runner.py).
+OSWorld-V2's own code at the tested commit ($NULLIUS_UPSTREAM) loads, acts and
+scores, in processes of its own; this driver imports none of it. Each unit's
+script runs in the unit's folder, so its logs and results stay with the
+trial. Every process gets the
 assets folder (_assets) as OSWORLD_FILE_BASE_URL and the startup folder first on
 PYTHONPATH. Mock websites (websites.py), GitLab (gitlab_server.py) and a proxy
 (proxy.py) are the unit's services.
@@ -14,10 +15,11 @@ setup    - the task's instruction, for the null control, from nop.py
 answer   - the Original setup: the agent option's script (agents.json) on the
            one task, its model calls through the unit's relay, whose stop file
            ends the episode with DONE
+task_given, end - an agent's unit: the port's window closes; its runner goes
 score    - the upstream's result.txt and result.json; for the null control,
-           nop.py's. A failed LLM grader or null-control setup, or a read of
-           the VM or a site that the evaluation could not make, is the
-           score's error, never a 0
+           nop.py's; for an agent, runner.py's. A failed LLM grader or
+           null-control setup, or a read of the VM or a site that the
+           evaluation could not make, is the score's error, never a 0
 
 Units on one machine start their VMs one after another under START_LOCK,
 OSWorld1's own file. A reaper in a session of its own, armed as the script
@@ -35,12 +37,14 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import socket
 import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import zlib
@@ -53,10 +57,10 @@ import websites
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UP = os.environ["NULLIUS_UPSTREAM"]
-_ARGS = sys.argv[1:6] if sys.argv[1:2] not in (["--reap"], ["--ward"]) else []
+_ARGS = sys.argv[1:7] if sys.argv[1:2] not in (["--reap"], ["--ward"]) else []
 _FILES = [os.path.join(HERE, n) for n in ("agents.json", "nop.py", os.path.join("startup", "sitecustomize.py"),
-                                          "websites.compose.yml", "gitlab.compose.yml")]
-AGENTS_FILE, NOP, SITE, websites.OVERRIDE, gitlab_server.OVERRIDE = (_ARGS + _FILES[len(_ARGS):])[:5]
+                                          "websites.compose.yml", "gitlab.compose.yml", "runner.py")]
+AGENTS_FILE, NOP, SITE, websites.OVERRIDE, gitlab_server.OVERRIDE, RUNNER_PY = (_ARGS + _FILES[len(_ARGS):])[:6]
 websites.SITE = SITE
 with open(AGENTS_FILE, encoding="utf-8") as _f:
     AGENTS = json.load(_f)
@@ -165,6 +169,14 @@ WRITE_OPTIONS = ("NULLIUS_OPTION_WRITE_MBPS", "NULLIUS_OPTION_WRITE_IOPS")
 PROBE = "nullius-osworld2-probe-"
 PROBE_SECONDS = 600
 PACK_LOG = "api_logs.log"
+PASSWORD_LINE = "If you need a password for sudo, the password of the computer is '{password}'."
+DATE_LINE = "The current date is {date}."
+AGENT_SECONDS = 7200
+AGENT_STEPS = "100"
+AGENT_PAUSE = "3.0"
+GIVEN_SECONDS = 30
+RUNNER_DIR = "osworld2"
+RUNNERS = {}
 _STARTUP = []
 _PORTS = []
 _ARMED = {}
@@ -217,8 +229,10 @@ def _letting_go(handler):
 
 
 @_letting_go
-def setup(unit, dir, **_):
+def setup(unit, dir, participant=None, **_):
     domain, eid = _unit(unit)
+    if participant == "agent":
+        return _agent_setup(domain, eid, dir)
     _fresh(dir)
     _task_file(domain, eid)
     websites.needed(eid)
@@ -1314,6 +1328,239 @@ def _grader_refused(dir, judge):
     return refused
 
 
+def _port():
+    from nullius.standard import computer_port
+    return computer_port
+
+
+def _runner_dir(dir):
+    return os.path.join(os.path.dirname(os.path.abspath(dir)), ".work", RUNNER_DIR)
+
+
+def _held_dir(dir):
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(dir))), ".work", RUNNER_DIR + "-held")
+
+
+def _setup_seconds():
+    with open(os.path.join(HERE, "standard.json"), encoding="utf-8") as f:
+        return json.load(f)["limits"]["setup_seconds"]
+
+
+def _not_ready(log):
+    try:
+        with open(log, encoding="utf-8", errors="replace") as f:
+            said = [ln.strip()[len("runner: not ready: "):] for ln in f if ln.startswith("runner: not ready: ")]
+    except OSError:
+        return None
+    return said[-1] if said else None
+
+
+def _agent_setup(domain, eid, dir):
+    until = time.time() + _setup_seconds() - CLOSE_SECONDS
+    for old in list(RUNNERS):
+        _release(old)
+    if eid in JUDGED:
+        raise EnvironmentSetupError(f"task {eid} is scored by the LLM grader, which an agent's unit does not reach yet")
+    if eid in ASKS_USER:
+        raise EnvironmentSetupError(f"task {eid} has a simulated user, which agent.computer/v1 does not reach")
+    where, held = _runner_dir(dir), contextlib.ExitStack()
+    sock_dir = life_r = life_w = p = lock = None
+    log = os.path.join(where, "runner.log")
+    try:
+        with _set_up():
+            _fresh(where)
+            vm = _vm(where, domain, eid)
+            instruction = _task(where, domain, eid)["instruction"]
+            services = _services(held, where, domain, eid, until)
+            assets = _assets(where, eid)
+            os.makedirs(_held_dir(dir), mode=0o700, exist_ok=True)
+            sock_dir = tempfile.mkdtemp(prefix="osworld2-")
+            life_r, life_w = os.pipe()
+            lock = os.fdopen(websites.opened(START_LOCK))
+        steps = os.environ.get("NULLIUS_OPTION_MAX_STEPS", "default")
+        ready = os.path.join(sock_dir, "ready.json")
+        argv = [sys.executable, RUNNER_PY, "--examples", EXAMPLES, "--domain", domain, "--task-id", eid,
+                "--result-dir", os.path.join(where, RESULTS), "--socket", os.path.join(sock_dir, "s"), "--ready", ready,
+                "--vm", vm, "--calls", os.path.join(where, "computer-calls.jsonl"), "--password", PASSWORD,
+                "--lifeline", str(life_r), "--steps", AGENT_STEPS if steps == "default" else steps,
+                "--pause", AGENT_PAUSE, "--held", _held_dir(dir),
+                "--prepared", os.path.join(where, "computer-prepare.jsonl"), "--given", os.path.join(sock_dir, "given.json")]
+        env = _env(eid, assets, **services)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [env["PYTHONPATH"], os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_port().__file__))))])
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if _Waiting(until).wait(1):
+                    raise EnvironmentSetupError("the runner was not started: the unit's time ran out")
+        with open(log, "a") as f:
+            p = subprocess.Popen(argv, cwd=where, env=env, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                 start_new_session=True, pass_fds=(life_r,))
+        _arm(p.pid, where, True)
+        t0 = time.time()
+        while p.poll() is None and not os.path.exists(ready) and time.time() - t0 < START_SECONDS \
+                and time.time() < until:
+            if CLOSED.wait(1):
+                _stop(p, log, "the runner", True)
+            with contextlib.suppress(OSError), open(log, encoding="utf-8", errors="replace") as f:
+                if STARTED in f.read():
+                    break
+    except BaseException:
+        if p is not None and p.pid not in _ARMED:
+            with contextlib.suppress(OSError):
+                os.killpg(p.pid, signal.SIGKILL)
+        elif p is not None:
+            _reaper(p.pid, where, True)
+        for fd in (life_r, life_w):
+            if fd is not None:
+                os.close(fd)
+        held.close()
+        if sock_dir is not None:
+            shutil.rmtree(sock_dir, ignore_errors=True)
+        raise
+    finally:
+        if lock is not None:
+            lock.close()
+    os.close(life_r)
+    RUNNERS[where] = {"p": p, "sock_dir": sock_dir, "life": life_w, "held": held}
+    with open(os.path.join(where, "runner.json"), "w", encoding="utf-8") as f:
+        json.dump({"pid": p.pid}, f)
+    try:
+        while not os.path.exists(ready):
+            if p.poll() is not None:
+                said = _not_ready(log) or _tail(log, p.returncode)[1]
+                raise EnvironmentSetupError(f"the runner exited {p.returncode} before the agent's first step: {said}")
+            if CLOSED.wait(0.2):
+                raise EnvironmentSetupError("the runner was stopped: the unit's time ran out")
+            if time.time() > until:
+                raise EnvironmentSetupError("the runner was not ready by the end of the unit's setup")
+        with open(ready, encoding="utf-8") as f:
+            said = json.load(f)
+    except BaseException:
+        _release(where)
+        raise
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(ready)
+    if not said.get("ok"):
+        _release(where)
+        raise EnvironmentSetupError("the runner's setup failed: " + str(said.get("error")))
+    lines = [instruction, PASSWORD_LINE.format(password=said.get("password") or "")]
+    if isinstance(said.get("date"), str) and re.fullmatch(r"\d{4}-\d\d-\d\d", said["date"]):
+        lines.append(DATE_LINE.format(date=said["date"]))
+    pipe = os.path.join(os.path.dirname(os.path.abspath(_port().__file__)), "computer_pipe.py")
+    return {"prompt": "\n\n".join(lines), "agent_seconds": AGENT_SECONDS,
+            "mcp": [{"name": "computer", "server": "computer", "args": [pipe, os.path.join(sock_dir, "s")]}]}
+
+
+def task_given(unit, dir, **_):
+    entry = RUNNERS.get(_runner_dir(dir))
+    if entry is None or entry.get("life") is None:
+        raise RuntimeError("no runner of this driver's for this unit: the window before the task cannot be closed")
+    said = os.path.join(entry["sock_dir"], "given.json")
+    os.write(entry["life"], _port().TASK_GIVEN + b"\n")
+    t0 = time.time()
+    while not os.path.exists(said):
+        if entry["p"].poll() is not None or time.time() - t0 > GIVEN_SECONDS or CLOSED.wait(0.05):
+            raise RuntimeError("the runner did not say that the window before the task is closed")
+    with open(said, encoding="utf-8") as f:
+        ok = json.load(f).get("ok")
+    os.unlink(said)
+    if not ok:
+        raise RuntimeError("the runner could not close the window before the task")
+    return {}
+
+
+def _let_go(entry):
+    if entry.get("life") is not None:
+        with contextlib.suppress(OSError):
+            os.close(entry["life"])
+        entry["life"] = None
+
+
+def _release(where):
+    entry = RUNNERS.pop(where, None)
+    if entry is None:
+        return
+    _let_go(entry)
+    try:
+        _reaper(entry["p"].pid, where, True)
+    finally:
+        entry["held"].close()
+        shutil.rmtree(entry["sock_dir"], ignore_errors=True)
+
+
+def end(unit, dir, **_):
+    try:
+        _release(_runner_dir(dir))
+    finally:
+        while _OWN:
+            os.close(_OWN.pop())
+    return {}
+
+
+def _plain(base, *parts):
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(base, flags | os.O_DIRECTORY)
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, flags | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        ffd = os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=fd)
+    finally:
+        os.close(fd)
+    with os.fdopen(ffd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise RuntimeError(f"{parts[-1]} is not a plain file")
+        return f.read()
+
+
+def _agent_score(where, dir, domain, eid):
+    entry = RUNNERS.get(where)
+    if entry is None:
+        raise RuntimeError("no runner of this driver's for this unit: its result is not read")
+    if entry.get("life") is not None:
+        with contextlib.suppress(OSError):
+            os.write(entry["life"], _port().TURN_END + b"\n")
+    p, until = entry["p"], time.time() + _score_seconds() - 2 * CLOSE_SECONDS
+    while p.poll() is None and time.time() < until and not CLOSED.wait(0.5):
+        pass
+    code = p.poll()
+    _release(where)
+    log = os.path.join(where, "runner.log")
+    if CLOSED.is_set() and code is None:
+        raise CancelledError("the runner was stopped: the unit's time ran out")
+    if code is None:
+        raise VerifierError("the runner did not end in the score's time after the agent's end, and was stopped")
+    if code != 0:
+        kind, said = _tail(log, code)
+        raise kind(f"the runner exited {code}: {said}")
+    trial = os.path.dirname(os.path.abspath(dir))
+    try:
+        result = _plain(trial, ".work", RUNNER_DIR, RESULTS, domain, eid, "result.txt")
+    except (OSError, RuntimeError) as e:
+        raise VerifierError(f"the runner's result could not be read ({type(e).__name__})") from None
+    kept = {"computer-calls.jsonl": b""}
+    for name in ("computer-calls.jsonl", "computer-prepare.jsonl"):
+        with contextlib.suppress(OSError, RuntimeError):
+            kept[name] = _plain(trial, ".work", RUNNER_DIR, name)
+    for name in ("result.json", "traj.jsonl"):
+        with contextlib.suppress(OSError, RuntimeError):
+            kept[name] = _plain(trial, ".work", RUNNER_DIR, RESULTS, domain, eid, name)
+    out = os.path.join(trial, "verifier", RUNNER_DIR)
+    os.makedirs(out, exist_ok=True)
+    for name, data in [("result.txt", result)] + sorted(kept.items()):
+        with open(os.path.join(out, name), "wb") as f:
+            f.write(data)
+    scored = _scored(out, "runner.py, run_single_example, DesktopEnv.evaluate")
+    _unread(scored["reward"], log, retried=eid in RETRIES_SITE_READS)
+    scored["detail"]["tool_calls"] = len(kept["computer-calls.jsonl"].splitlines())
+    return dict(scored, **_setup_errors(log))
+
+
 def score(*a, **kw):
     try:
         return _score(*a, **kw)
@@ -1342,8 +1589,11 @@ def _score(unit, dir, transcript=None, answer=None, setup=None, judge=None, **_)
                     **_setup_errors(*logs))
     if setup is not None:
         raise RuntimeError(f"unknown setup {setup}: OSWorld2 runs original and its null control")
+    runner = _runner_dir(dir)
+    if runner in RUNNERS or os.path.lexists(os.path.join(runner, "runner.json")):
+        return _agent_score(runner, dir, domain, eid)
     if answer:
-        raise RuntimeError("OSWorld2 has no agent side yet: agent.computer/v1 has no kit")
+        raise RuntimeError("no runner was set up for this unit: an agent's setup starts one")
     until = time.time() + _score_seconds() - 2 * CLOSE_SECONDS
     where = os.path.join(dir, RESULTS, "nop", domain, eid)
     failed = os.path.join(where, SETUP_FAILED)
@@ -1376,7 +1626,7 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--ward"]:
         gitlab_server.ward(int(sys.argv[2]), sys.argv[3])
         sys.exit(0)
-    HANDLERS = {"units": units, "setup": setup, "answer": answer, "score": score}
+    HANDLERS = {"units": units, "setup": setup, "task_given": task_given, "answer": answer, "score": score, "end": end}
     threading.Thread(target=_read, daemon=True).start()
     while True:
         line = LINES.get()

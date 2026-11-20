@@ -23,12 +23,24 @@
       "{here}/nop.py",
       "{here}/startup/sitecustomize.py",
       "{here}/websites.compose.yml",
-      "{here}/gitlab.compose.yml"
+      "{here}/gitlab.compose.yml",
+      "{here}/runner.py"
     ],
     "install": {
       "python": "3.12",
       "project": ".",
       "locked": true
+    },
+    "participant": true,
+    "unit_end": true,
+    "task_given": true
+  },
+  "mcp_servers": {
+    "computer": {
+      "command": [
+        "{install}/.venv/bin/python"
+      ],
+      "summary": "The unit's desktop for an agent: the computer port's pipe joined to the socket where the unit's runner serves it."
     }
   },
   "datasets": [
@@ -87,7 +99,8 @@
   },
   "limits": {
     "score_seconds": 3600,
-    "call_seconds": 3300
+    "call_seconds": 3300,
+    "setup_seconds": 3600
   },
   "setups": {
     "original": {
@@ -128,7 +141,8 @@
       "label": "Steps per task",
       "summary": "The agent's step limit. default: each agent's own, as its wrapper runs it.",
       "setups": [
-        "original"
+        "original",
+        "yours"
       ],
       "default": "default",
       "pattern": "default|[1-9][0-9]{0,3}",

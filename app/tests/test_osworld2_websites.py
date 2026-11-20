@@ -655,7 +655,7 @@ class Driver(unittest.TestCase):
     def test_the_override_is_the_one_the_command_names(self):
         with open(os.path.join(HERE, "standard.json"), encoding="utf-8") as f:
             command = json.load(f)["driver"]["command"]
-        self.assertEqual(command[-2], "{here}/websites.compose.yml")
+        self.assertEqual(command[5], "{here}/websites.compose.yml")
         self.assertEqual(self.w.OVERRIDE, os.path.join(HERE, "websites.compose.yml"))
         given = os.path.join(self.tmp, "snapshot", "websites.compose.yml")
         spec = importlib.util.spec_from_file_location("osworld2_driver_argv", os.path.join(HERE, "driver.py"))

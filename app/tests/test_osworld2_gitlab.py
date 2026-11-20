@@ -437,7 +437,7 @@ class Driver(unittest.TestCase):
         for name in ("gitlab_server.py", "gitlab.compose.yml"):
             self.assertEqual((entry / name).read_bytes(), (Path(HERE) / name).read_bytes(), name)
         with open(os.path.join(HERE, "standard.json"), encoding="utf-8") as f:
-            self.assertEqual(json.load(f)["driver"]["command"][-1], "{here}/gitlab.compose.yml")
+            self.assertEqual(json.load(f)["driver"]["command"][6], "{here}/gitlab.compose.yml")
 
 
 def _stack():
