@@ -549,7 +549,7 @@ class Upload(Port):
             self.assertEqual(f.read(), content)
         self.assertEqual(second.desktop.kinds(), ["python", "upload"])                # the folder made, the upload
         with open(os.path.join(run, digest), "r+b") as f:       # a kept file that changed is not taken
-            f.write(b"\0")
+            f.write(bytes([content[0] ^ 0xFF]))
         self.assertIn("the run holds no file of that sha256", error(c2.call("upload", path="t2.bin", sha256=digest)))
 
     def test_chunks_that_do_not_hash_to_the_sha256_given_are_not_kept(self):
