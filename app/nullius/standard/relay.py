@@ -42,7 +42,9 @@ A run may pin, for a model, the serving providers that may answer it
 (``serving``, OpenRouter's routing): the relay then puts
 ``provider: {order, allow_fallbacks: false}`` on every request it sends as
 that model, in place of the caller's own, and records both, cleaned of
-credentials. Without a pin a request's body goes on as it did.
+credentials. Without a pin a request's body goes on as it did, but for one field: on
+OpenRouter, a Messages request to an Anthropic model whose adaptive ``thinking`` names no
+``display`` gets ``display: omitted``, as Anthropic's own API would take it.
 
 One answer is the relay's own: a run with a spending cap (``ledger``) books
 each call before it goes out, and a call that does not fit is not sent. Its
@@ -682,7 +684,8 @@ class Relay:
     def __init__(self, base: str, key: str, record_dir: str, prices: Optional[Dict[str, dict]] = None,
                  model: Optional[str] = None, side_models=(), key_header: str = "authorization", fields: bool = False,
                  ledger: Optional[str] = None, unit_caps: bool = True, serving: Optional[Dict[str, List[str]]] = None,
-                 facts: Optional[bool] = None, timeout: float = TIMEOUT, max_calls: Optional[int] = None):
+                 facts: Optional[bool] = None, timeout: float = TIMEOUT, max_calls: Optional[int] = None,
+                 openrouter: Optional[bool] = None):
         """``base``: the provider's endpoint (``https://api.openai.com/v1``).
         ``model``: when given, every call is sent as this model, whatever the
         caller named - the run's model is the recipe's, not the agent's. A
@@ -707,12 +710,16 @@ class Relay:
         routing facts, where its reply names who served it; by default when
         ``base`` is OpenRouter's. ``timeout``: the seconds one call may wait.
         ``max_calls``: the most model calls the agent's own route of a unit
-        may make (:func:`agent_route`), each answered call counted."""
+        may make (:func:`agent_route`), each answered call counted.
+        ``openrouter``: ``base`` is OpenRouter's (by default when its host is): a Messages request to an
+        Anthropic model whose adaptive ``thinking`` names no ``display`` is sent with ``display: omitted``, the
+        default of Anthropic's own API, and the record says so (``thinking_display_added``)."""
         self.fields = fields
         self.max_calls = max_calls
         self.answered: Dict[str, int] = {}       # the calls each agent route had answered, for max_calls
         self.serving = {m: list(s) for m, s in (serving or {}).items()}
         host = (urllib.parse.urlsplit(base).hostname or "").lower()
+        self.openrouter = (host == "openrouter.ai" or host.endswith(".openrouter.ai")) if openrouter is None else bool(openrouter)
         self.facts = (host == "openrouter.ai" or host.endswith(".openrouter.ai")) if facts is None else bool(facts)
         self.ledger = ledgers.Ledger(ledger) if ledger else None
         # False for the benchmark's own relay: its calls (an option's embeddings) are no one unit's, so only the run's cap holds them
@@ -818,7 +825,7 @@ class Relay:
             req = {}
         asked = req.get("model") if isinstance(req, dict) else None
         side = False
-        routing_asked, pinned = None, None
+        routing_asked, pinned, display_added = None, None, False
         if isinstance(req, dict) and req:
             if rest.split("?")[0] == "/embeddings" and self.embedding_models.get(tag):
                 req["model"] = self.embedding_models[tag]
@@ -835,6 +842,11 @@ class Relay:
             if pinned:
                 routing_asked = req.get("provider")
                 req["provider"] = routing(pinned)
+            thinking = req.get("thinking")
+            if (self.openrouter and rest.split("?")[0].endswith("/messages") and str(req.get("model") or "").startswith("anthropic/")
+                    and isinstance(thinking, dict) and thinking.get("type") == "adaptive" and "display" not in thinking):
+                req["thinking"] = dict(thinking, display="omitted")
+                display_added = True
             raw = json.dumps(req).encode()
         if not side and not self.models.get(tag) and self._asked():
             h.send_error(400, "the unit was asked to stop")
@@ -901,6 +913,8 @@ class Relay:
                    "headers": sorted(k.lower() for k in forwarded(h.headers))}        # the names sent on, never a value
             if side:
                 rec["side"] = True
+            if display_added:
+                rec["request"]["thinking_display_added"] = "omitted"
             if isinstance(req, dict) and req.get("provider") is not None:
                 # the routing as sent, and the caller's own the pin replaced: recorded copies, cleaned
                 rec["request"]["routing"] = _clean(req["provider"], (self.key, self.key.strip()))

@@ -347,6 +347,33 @@ class TheRelay(WithUpstream):
         self.assertTrue(relay.Relay("https://openrouter.ai/api/v1", "k", os.path.join(self.tmp, "or")).facts)
         self.assertFalse(relay.Relay("https://api.openai.com/v1", "k", os.path.join(self.tmp, "oa")).facts)
 
+    def test_a_thinking_display_the_caller_left_out_is_omitted_for_anthropic_on_openrouter(self):
+        r = self.relay(model="anthropic/claude-x", openrouter=True)
+        body = dict(body_for("/messages", False), thinking={"type": "adaptive"})
+        post(r.url("u0") + "/messages", body)
+        self.assertEqual(self.sent()["thinking"], {"type": "adaptive", "display": "omitted"})
+        self.assertEqual(dict(self.sent(), thinking=body["thinking"]), dict(body, model="anthropic/claude-x"))
+        self.assertEqual(r.calls("u0")[-1]["request"]["thinking_display_added"], "omitted")
+        post(r.url("u0") + "/messages", dict(body_for("/messages", True), thinking={"type": "adaptive"}))
+        self.assertEqual(self.sent()["thinking"], {"type": "adaptive", "display": "omitted"})
+
+    def test_a_thinking_display_is_left_as_it_came_everywhere_else(self):
+        cases = ((dict(model="anthropic/claude-x", openrouter=True), "/messages", {"type": "adaptive", "display": "summarized"}),
+                 (dict(model="anthropic/claude-x", openrouter=True), "/messages", {"type": "between_tools"}),
+                 (dict(model="anthropic/claude-x", openrouter=True), "/messages", {"type": "disabled"}),
+                 (dict(model="anthropic/claude-x", openrouter=True), "/messages", {"type": "enabled", "budget_tokens": 9}),
+                 (dict(model="anthropic/claude-x", openrouter=True), "/messages", None),
+                 (dict(model="minimax/minimax-m3", openrouter=True), "/messages", {"type": "adaptive"}),
+                 (dict(model="anthropic/claude-x", openrouter=True), "/chat/completions", {"type": "adaptive"}),
+                 (dict(model="anthropic/claude-x"), "/messages", {"type": "adaptive"}))
+        for kw, path, thinking in cases:
+            with self.subTest(kw=kw, path=path, thinking=thinking):
+                r = self.relay(**kw)
+                body = dict(body_for(path, False), **({"thinking": thinking} if thinking is not None else {}))
+                post(r.url("u0") + path, body)
+                self.assertEqual(Upstream.seen[-1][2], json.dumps(dict(body, model=kw["model"])).encode())
+                self.assertNotIn("thinking_display_added", r.calls("u0")[-1]["request"])
+
     def test_without_a_pin_every_request_goes_on_byte_for_byte_as_before(self):
         """What a relay sent before pins existed: the caller's body with the model set (and a streamed Chat
         Completions request's usage flag), serialised once, and the caller's headers but its credentials. The
