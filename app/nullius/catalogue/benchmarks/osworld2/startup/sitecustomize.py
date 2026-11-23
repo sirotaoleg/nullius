@@ -338,7 +338,7 @@ def floor_desktop_env(module):
 def _guest(controller, command, seconds):
     import requests
     said = requests.post(controller.http_server + "/setup/execute",
-                         json={"command": command, "shell": True, "timeout": seconds}, timeout=seconds + 30)
+                         json={"command": command, "shell": True, "timeout": seconds}, timeout=seconds + 5)
     return said.status_code == 200 and str(said.json().get("returncode", 1)) == "0"
 
 
@@ -348,13 +348,14 @@ def _root(controller, command, seconds):
 
 
 def _fetch(snap, url, seconds, cache=SNAP_CACHE):
-    """The guest's own download of one snap from the driver into snapd's cache within ``seconds``, kept only with the
-    store's sha3-384 and size."""
+    """The guest's own download of one snap from the driver into snapd's cache, its check and its move all within
+    ``seconds``, kept only with the store's sha3-384 and size."""
     sha, part = snap["sha3_384"], f"{cache}/{snap['sha3_384']}.part"
-    return (f"mkdir -p {cache} && timeout -k 5 {seconds} wget -q --tries=1 --connect-timeout=5 -O {part} {url}/{sha} "
-            f"&& test \"$(stat -c %s {part})\" = {int(snap['size'])} && "
-            f"test \"$(openssl dgst -sha3-384 -r {part} | cut -d\" \" -f1)\" = {sha} && "
-            f"mv {part} {cache}/{sha} && chmod 0644 {cache}/{sha} || {{ rm -f {part}; exit 1; }}")
+    steps = (f"wget -q --tries=1 --connect-timeout=5 -O {part} {url}/{sha} && "
+             f"test \"$(stat -c %s {part})\" = {int(snap['size'])} && "
+             f"test \"$(openssl dgst -sha3-384 -r {part} | cut -d\" \" -f1)\" = {sha} && "
+             f"mv {part} {cache}/{sha} && chmod 0644 {cache}/{sha}")
+    return f"mkdir -p {cache} && timeout -k 5 {seconds} sh -c {shlex.quote(steps)} || {{ rm -f {part}; exit 1; }}"
 
 
 def _seeded(controller, use_proxy, environ=os.environ):
@@ -369,7 +370,12 @@ def _seeded(controller, use_proxy, environ=os.environ):
         if not controller.ensure_ready(use_proxy):
             return placed
         for snap in listed:
-            if _guest(controller, f"snap list {shlex.quote(snap['name'])}", SNAP_CHECK_SECONDS):
+            if not re.fullmatch(r"[a-z0-9-]{1,40}", str(snap["name"])):
+                continue
+            if int(until - time.time()) < 2 * SNAP_CHECK_SECONDS:
+                log.info("snap cache %s: not delivered", snap["name"])
+                break
+            if _guest(controller, f"snap list {snap['name']}", SNAP_CHECK_SECONDS):
                 continue
             left = int(until - time.time())
             if left < SNAP_CHECK_SECONDS or not _root(controller, _fetch(snap, environ[SNAP_URL], left), left + 10):
@@ -382,13 +388,16 @@ def _seeded(controller, use_proxy, environ=os.environ):
 
 
 def _hits(controller, placed):
-    """Hit: snapd's installed file is the cached one (one inode); miss: snapd downloaded its own."""
+    """Hit: snapd's installed file is the cached one (one inode); miss: snapd downloaded its own, or the guest did not
+    say within SNAP_CHECK_SECONDS for all."""
+    until = time.time() + SNAP_CHECK_SECONDS
     for snap in placed:
         cached = f"{SNAP_CACHE}/{snap['sha3_384']}"
         used = f"/var/lib/snapd/snaps/{snap['name']}_{int(snap['revision'])}.snap"
+        left = int(until - time.time())
         try:
-            hit = _root(controller, f'test -e {cached} && test -e {used} && '
-                                    f'test "$(stat -c %i {cached})" = "$(stat -c %i {used})"', SNAP_CHECK_SECONDS)
+            hit = left > 0 and _root(controller, f'test -e {cached} && test -e {used} && '
+                                                 f'test "$(stat -c %i {cached})" = "$(stat -c %i {used})"', left)
         except Exception:
             hit = False
         logging.getLogger("nullius.osworld2").info("snap cache %s: %s", snap["name"], "hit" if hit else "miss")

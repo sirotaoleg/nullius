@@ -83,12 +83,15 @@ class Host(unittest.TestCase):
         self.slept = p.start()
         self.addCleanup(p.stop)
 
-    def fill(self, store, eid="093"):
+    def fill(self, store, eid="093", fresh=True):
         listed = store.listed = threading.Event()
         with mock.patch.object(self.driver.urllib.request, "urlopen", store), \
                 mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            self.driver._snap_fill(eid, listed)
-        self.assertTrue(listed.is_set())
+            done = threading.Thread(target=self.driver._snap_fill, args=(eid, listed))
+            done.start()
+            done.join(20)
+        self.assertFalse(done.is_alive(), "the filling waited")
+        self.assertEqual(listed.is_set(), fresh)
         return err.getvalue()
 
     def listed(self):
@@ -149,7 +152,7 @@ class Host(unittest.TestCase):
         self.assertEqual(len(self.listed()), 3)
         self.slept.reset_mock()
         shutil.rmtree(self.cache)
-        self.assertIn("OSError", self.fill(Store(down=True)))
+        self.assertIn("OSError", self.fill(Store(down=True), fresh=False))
         self.assertEqual(self.slept.call_count, self.driver.SNAP_TRIES - 1)
         self.assertFalse(os.path.exists(os.path.join(self.cache, "093.json")))
 
@@ -167,7 +170,7 @@ class Host(unittest.TestCase):
         with open(os.path.join(self.cache, ".lock"), "w") as held:
             self.driver.fcntl.flock(held, self.driver.fcntl.LOCK_EX)
             store = Store()
-            self.assertEqual(self.fill(store), "")
+            self.assertEqual(self.fill(store, fresh=False), "")
         self.assertEqual(store.asked, [])
 
     def test_the_unit_starts_one_filling_and_another_task_none(self):
@@ -176,7 +179,10 @@ class Host(unittest.TestCase):
                                lambda target, args, daemon: types.SimpleNamespace(start=lambda: started.append(args))):
             for eid in ("093", "093", "045"):
                 self.driver._snaps(eid)
-        self.addCleanup(self.driver._FILLING.clear)
+        self.assertEqual([a[0] for a in started], ["093"])
+        self.assertEqual((self.driver._FILLING, set(self.driver._FRESH)), ({"093"}, {"093"}))
+        self.driver._FILLING.clear()
+        self.driver._snaps("093")
         self.assertEqual([a[0] for a in started], ["093"])
 
 
@@ -212,9 +218,14 @@ class Served(unittest.TestCase):
         self.list([{"name": "openboard", "revision": 7, "sha3_384": SHA, "size": len(BLOB),
                     "file": os.path.join(self.tmp, "secret")},
                    {"name": "kf6-core24", "revision": 69, "sha3_384": BIG, "size": BIG_SIZE},
-                   {"name": "bad", "revision": 1, "sha3_384": "../other", "size": 1}])
+                   {"name": "bad", "revision": 1, "sha3_384": "../other", "size": 1},
+                   {"name": "x; reboot", "revision": 1, "sha3_384": OLD, "size": 3},
+                   {"name": "lxqt-support-core24", "revision": 19, "sha3_384": "x; reboot", "size": 1}])
         self.unit = os.path.join(self.tmp, "unit")
         os.makedirs(self.unit)
+        fresh = threading.Event()
+        fresh.set()
+        self.driver._FRESH["093"] = fresh
 
     def list(self, snaps):
         with open(os.path.join(self.cache, "093.json"), "w") as f:
@@ -254,7 +265,7 @@ class Served(unittest.TestCase):
                 for s in (idle, midway):
                     got = b""
                     with contextlib.suppress(OSError):
-                        while chunk := s.recv(1 << 16):
+                        while len(got) < BIG_SIZE // 2 and (chunk := s.recv(1 << 16)):
                             got += chunk
                     s.close()
                     self.assertLess(len(got), BIG_SIZE // 2)
@@ -273,6 +284,27 @@ class Served(unittest.TestCase):
             self.assertLess(time.time() - started, 5)
             self.assertEqual(get(f"{served['OSWORLD2_SNAP_URL']}/{SHA}")[0], 200)
 
+    def test_connections_past_the_limit_are_closed_at_once(self):
+        with self.driver._snap_served("093", self.unit) as served:
+            host, port = served["OSWORLD2_SNAP_URL"][len("http://"):].split(":")
+            held = [socket.create_connection((host, int(port)), timeout=5) for _ in range(self.driver.SNAP_CONNECTIONS)]
+            for h in held:
+                h.sendall(b"GET /")
+            time.sleep(0.5)
+            extra = socket.create_connection((host, int(port)), timeout=5)
+            started = time.time()
+            with contextlib.suppress(OSError):
+                self.assertEqual(extra.recv(10), b"")
+            self.assertLess(time.time() - started, 3)
+            for h in held + [extra]:
+                h.close()
+
+    def test_a_list_not_written_for_the_guest_serves_nothing(self):
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as err, \
+                self.driver._snap_served("093", os.path.join(self.tmp, "no", "such")) as served:
+            self.assertEqual(served, {})
+        self.assertIn("not served to the guest", err.getvalue())
+
     def test_no_list_or_no_gateway_serves_nothing(self):
         for snaps in ([], [{"name": "bad", "revision": 1, "sha3_384": "x", "size": 1}]):
             self.list(snaps)
@@ -287,13 +319,17 @@ class Served(unittest.TestCase):
         with self.driver._snap_served("045", self.unit) as served:
             self.assertEqual(served, {})
 
-    def test_the_unit_waits_for_the_stores_current_list_a_while_only(self):
+    def test_only_a_list_made_against_the_store_in_time_is_served(self):
         event = threading.Event()
-        self.driver._FILLING["093"] = event
-        self.addCleanup(self.driver._FILLING.pop, "093", None)
-        with mock.patch.object(event, "wait") as waited, self.driver._snap_served("093", self.unit) as served:
-            self.assertTrue(served)
-        waited.assert_called_once_with(self.driver.SNAP_LISTED_SECONDS)
+        self.driver._FRESH["093"] = event
+        for ready in (False, True):
+            with self.subTest(ready=ready), mock.patch.object(event, "wait", return_value=ready) as waited, \
+                    self.driver._snap_served("093", self.unit) as served:
+                self.assertEqual(bool(served), ready)
+            waited.assert_called_once_with(self.driver.SNAP_LISTED_SECONDS)
+        del self.driver._FRESH["093"]
+        with self.driver._snap_served("093", self.unit) as served:
+            self.assertEqual(served, {})
 
 
 class Paths(unittest.TestCase):
@@ -307,7 +343,7 @@ class Paths(unittest.TestCase):
         self.driver = load_driver(self.tmp)
         self.driver.START_LOCK = os.path.join(self.tmp, "start.lck")
         self.envs = []
-        self.store = Store(down=True)
+        self.store = Store()
         cache = os.path.join(self.tmp, "cache", "snaps")
         os.makedirs(cache)
         with open(os.path.join(cache, SHA), "wb") as f:
@@ -333,7 +369,7 @@ class Paths(unittest.TestCase):
                                     (self.driver, "_task", lambda *a: {"instruction": "", "proxy": False}),
                                     (self.driver, "_run", started), (self.driver.subprocess, "Popen", popen),
                                     (self.driver.urllib.request, "urlopen", self.store),
-                                    (self.driver.time, "sleep", lambda s: None),
+                                    (self.driver.time, "sleep", lambda s: None), (self.driver, "SNAP_LISTED_SECONDS", 10),
                                     (self.driver._startup(), "network", lambda docker: "nullius-osworld2")):
             p = mock.patch.object(target, name, value)
             p.start()
@@ -361,13 +397,15 @@ class Paths(unittest.TestCase):
         self.assertEqual([got for _, got in envs], [200] * 3)
         for env, _ in envs:
             with open(env["OSWORLD2_SNAPS"]) as f:
-                self.assertEqual([s["sha3_384"] for s in json.load(f)], [SHA])
+                self.assertEqual({(s["name"], s["sha3_384"]) for s in json.load(f)},
+                                 {(n, SHA) for n in self.driver.SNAPS["093"]})
         self.assertEqual([get(f"{e['OSWORLD2_SNAP_URL']}/{SHA}")[0] for e, _ in envs], ["URLError"] * 3)
         for _ in range(100):
             if not self.driver._FILLING:
                 break
             time.sleep(0.05)
-        self.assertTrue(self.store.asked)
+        self.assertFalse(self.driver._FILLING)
+        self.assertTrue(any("/v2/snaps/info/" in u for u in self.store.asked))
 
     def test_another_tasks_gets_none(self):
         self.assertEqual([(e.get("OSWORLD2_SNAPS"), e.get("OSWORLD2_SNAP_URL")) for e, _ in self.start("045")],
@@ -484,7 +522,7 @@ class Seed(unittest.TestCase):
         self.DesktopEnv = DesktopEnv
         self.site.PATCHES[self.site.DESKTOP_ENV](types.SimpleNamespace(DesktopEnv=DesktopEnv))
         listed = [{"name": n, "revision": 7, "sha3_384": f"{n}-sha", "size": 11}
-                  for n in ("core24", "openboard", "kf6-core24", "mesa-2404", "lxqt-support-core24")]
+                  for n in ("x; reboot", "core24", "openboard", "kf6-core24", "mesa-2404", "lxqt-support-core24")]
         self.listed = os.path.join(self.tmp, "snaps.json")
         with open(self.listed, "w") as f:
             json.dump(listed, f)
@@ -510,6 +548,16 @@ class Seed(unittest.TestCase):
         self.assertIn("timeout -k 5 ", self.fetched()[0][1])
         self.assertEqual(said, ["snap cache mesa-2404: not delivered", "snap cache openboard: hit",
                                 "snap cache kf6-core24: miss"])
+        self.assertFalse([e for e in self.events if e[0] == "guest" and "reboot" in e[1]])
+
+    def test_hit_or_miss_has_a_time_of_its_own(self):
+        guest = Guest(self.events, hit={"openboard"})
+        with mock.patch.dict(sys.modules, {"requests": types.SimpleNamespace(post=guest.post)}), \
+                mock.patch.object(self.site, "SNAP_CHECK_SECONDS", 0), \
+                self.assertLogs("nullius.osworld2", "INFO") as logs:
+            self.site._hits(Controller(self.events), [{"name": "openboard", "revision": 7, "sha3_384": "s"}])
+        self.assertEqual(([e for e in self.events if e[0] == "guest"], [r.getMessage() for r in logs.records]),
+                         ([], ["snap cache openboard: miss"]))
 
     def test_with_too_little_time_left_nothing_more_is_fetched(self):
         guest = Guest(self.events)

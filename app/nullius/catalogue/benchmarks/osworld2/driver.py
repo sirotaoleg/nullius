@@ -130,10 +130,12 @@ SNAP_TRIES = 3
 SNAP_PAUSE = 10
 SNAP_LISTED_SECONDS = 30
 SNAP_CONNECTION_SECONDS = 30
+SNAP_CONNECTIONS = 8
 SNAP_ENV = "OSWORLD2_SNAPS"
 SNAP_URL = "OSWORLD2_SNAP_URL"
 SNAP_SHA = re.compile(r"[0-9a-f]{96}")
-_FILLING = {}
+_FRESH = {}
+_FILLING = set()
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
              "010": ("email_010.tar.gz",)}
@@ -1140,8 +1142,8 @@ def _snap_list(eid, where, current):
 
 
 def _snap_fill(eid, listed):
-    """In the background while this driver runs: the store's current revisions of the task's snaps, then their files.
-    Another driver filling the cache is left to it."""
+    """In the background: the store's current revisions of the task's snaps, ``listed`` set once the list names only
+    those, then their files. Another driver filling the cache is left to it, and ``listed`` stays unset."""
     where = _snap_cache()
     try:
         os.makedirs(where, exist_ok=True)
@@ -1160,15 +1162,16 @@ def _snap_fill(eid, listed):
         print(f"task {eid}: its snaps are not all on this machine yet ({type(e).__name__}: {e}); until they are, the "
               "guest downloads them itself", file=sys.stderr, flush=True)
     finally:
-        listed.set()
-        _FILLING.pop(eid, None)
+        _FILLING.discard(eid)
 
 
 def _snaps(eid):
-    """The task's snaps brought to this machine in the background, once a driver; a unit waits for none of it."""
+    """At a unit of the task, unless one is under way: the store asked again and the snaps brought to this machine in
+    the background; the unit waits only for the list (_snap_served)."""
     if eid in SNAPS and eid not in _FILLING:
-        _FILLING[eid] = threading.Event()
-        threading.Thread(target=_snap_fill, args=(eid, _FILLING[eid]), daemon=True).start()
+        _FILLING.add(eid)
+        _FRESH[eid] = threading.Event()
+        threading.Thread(target=_snap_fill, args=(eid, _FRESH[eid]), daemon=True).start()
 
 
 class _SnapServer(http.server.ThreadingHTTPServer):
@@ -1179,6 +1182,9 @@ class _SnapServer(http.server.ThreadingHTTPServer):
         super().__init__(address, handler)
 
     def process_request(self, request, client_address):
+        if len(self.open) >= SNAP_CONNECTIONS:
+            self.shutdown_request(request)
+            return
         self.open.add(request)
         super().process_request(request, client_address)
 
@@ -1221,31 +1227,30 @@ def _snap_handler(files):
 @contextlib.contextmanager
 def _snap_served(eid, dir):
     """For the unit's life, the cache's files of the store's current revisions, by their sha3-384 alone, on the VMs'
-    gateway at a free port, listed for the guest in <dir>/snaps.json; none, when there are none or no such address.
-    Every connection is closed with the unit."""
-    listing = _FILLING.get(eid)
-    if listing is not None:
-        listing.wait(SNAP_LISTED_SECONDS)
+    gateway at a free port, listed for the guest in <dir>/snaps.json; none, when the list was not made against the
+    store in SNAP_LISTED_SECONDS, names nothing, or there is no such address. Every connection is closed with the unit."""
+    fresh = _FRESH.get(eid)
     try:
+        if eid not in SNAPS or fresh is None or not fresh.wait(SNAP_LISTED_SECONDS):
+            raise LookupError("no list made against the store")
         with open(os.path.join(_snap_cache(), f"{eid}.json"), encoding="utf-8") as f:
-            snaps = [{k: s[k] for k in ("name", "revision", "sha3_384", "size")} for s in json.load(f)
-                     if SNAP_SHA.fullmatch(str(s.get("sha3_384")))] if eid in SNAPS else []
-    except (OSError, ValueError, KeyError, TypeError):
-        snaps = []
-    if not snaps:
-        yield {}
-        return
-    try:
+            snaps = [{"name": s["name"], "revision": int(s["revision"]), "sha3_384": s["sha3_384"], "size": int(s["size"])}
+                     for s in json.load(f) if s.get("name") in SNAPS[eid] and SNAP_SHA.fullmatch(str(s.get("sha3_384")))]
+        if not snaps:
+            raise LookupError("no snaps listed")
+        listed = os.path.join(dir, "snaps.json")
+        with open(listed, "w", encoding="utf-8") as f:
+            json.dump(snaps, f)
         server = _SnapServer((_startup().GATEWAY, 0), _snap_handler(
             {s["sha3_384"]: os.path.join(_snap_cache(), s["sha3_384"]) for s in snaps}))
-    except OSError as e:
+    except LookupError:
+        yield {}
+        return
+    except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"task {eid}: its snaps are not served to the guest ({type(e).__name__}); the guest downloads them "
               "itself", file=sys.stderr, flush=True)
         yield {}
         return
-    listed = os.path.join(dir, "snaps.json")
-    with open(listed, "w", encoding="utf-8") as f:
-        json.dump(snaps, f)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield {SNAP_ENV: listed, SNAP_URL: f"http://{_startup().GATEWAY}:{server.server_address[1]}"}
