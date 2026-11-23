@@ -8,7 +8,8 @@ to RESULT_DIR/result.txt. --instruction writes the task's instruction and
 whether it asks for a proxy to OUT as JSON. A task with no class file is an
 error. The setup gets SETUP_ATTEMPTS; a failed one goes to
 RESULT_DIR/setup_failed.json by exception type only, since the message could
-quote the gated task."""
+quote the gated task; an evaluation that says a dependency of its own failed,
+to RESULT_DIR/evaluation_failed.json the same way."""
 import argparse
 import json
 import logging

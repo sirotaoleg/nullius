@@ -299,7 +299,8 @@ class AgentSide(unittest.TestCase):
         with self.assertRaises(self.d.EnvironmentSetupError) as raised:
             self.d.score(unit="tasks__903", dir=self.ws, transcript=[], answer="")
         self.assertIn("EvaluationInfrastructureError", str(raised.exception))
-        self.assertNotIn("missing", str(raised.exception))
+        with open(os.path.join(self.trial, ".work", "osworld2", "runner.log")) as f:
+            self.assertNotIn("a program the evaluator needs is missing", f.read())
         self.assertFalse(os.path.exists(os.path.join(self.trial, "verifier", "osworld2", "result.txt")))
 
     def test_a_step_with_no_action_and_an_end_ends_the_task(self):

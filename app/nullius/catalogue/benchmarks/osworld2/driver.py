@@ -656,9 +656,10 @@ def _tail(log, code=0):
     named = GRADER_NAME.match(raised)
     module, name = (named.group(1).rstrip("."), named.group(2)) if named else ("", "")
     frames = {m.group(1) for m in map(FRAME.match, block) if m}
-    said = name if name == "EnvironmentSetupError" or name in GRADER_CLASSES.get(module.replace("._exceptions", ""), ()) \
+    said = name if name in ("EnvironmentSetupError", "EvaluationInfrastructureError") or name in GRADER_CLASSES.get(module.replace("._exceptions", ""), ()) \
         else "an exception of the upstream's own" if name else "no exception named"
-    kind = EnvironmentSetupError if name == "EnvironmentSetupError" or frames & {"reset", "_start_emulator", "__init__"} \
+    kind = EnvironmentSetupError if name in ("EnvironmentSetupError", "EvaluationInfrastructureError") \
+        or frames & {"reset", "_start_emulator", "__init__"} \
         else VerifierError if frames & {"evaluate", "_call_task_evaluate"} else RuntimeError
     shots = [m.group(1) for m in map(SCREENSHOT.match, lines[:start]) if m]
     if kind is RuntimeError and name and shots[-1:] == ["Failed to get screenshot."]:

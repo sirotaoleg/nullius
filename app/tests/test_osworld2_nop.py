@@ -79,6 +79,11 @@ out = sys.argv[-1]
 if os.environ.get("FAKE_FAILED"):
     with open(os.path.join(out, "setup_failed.json"), "w") as f:
         json.dump(%(failed)r, f)
+if os.environ.get("FAKE_RAISED"):
+    print("Traceback (most recent call last):", flush=True)
+    print('  File "lib_run_single.py", line 1, in run_single_example', flush=True)
+    print("desktop_env.evaluators.errors.EvaluationInfrastructureError: %(words)s", flush=True)
+    sys.exit(1)
 if os.environ.get("FAKE_EVALUATION"):
     with open(os.path.join(out, "evaluation_failed.json"), "w") as f:
         json.dump({"error": "EvaluationInfrastructureError"}, f)
@@ -266,6 +271,12 @@ class EndsEarly(unittest.TestCase):
             self.nop(FAKE_EVALUATION="1")
         self.assertIn("EvaluationInfrastructureError", str(raised.exception))
         self.assertIn("the task was not scored", str(raised.exception))
+
+    def test_an_evaluation_that_raises_its_dependencys_failure_is_the_environments_error(self):
+        with self.assertRaises(self.driver.EnvironmentSetupError) as raised:
+            self.nop(FAKE_RAISED="1")
+        self.assertIn("EvaluationInfrastructureError", str(raised.exception))
+        self.assertNotIn(WORDS, str(raised.exception))
 
     def test_an_evaluation_failure_said_by_an_earlier_run_is_not_this_ones(self):
         where = os.path.join(self.unit, "results", "nop", "tasks", "001")
