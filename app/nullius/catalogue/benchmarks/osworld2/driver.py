@@ -902,13 +902,18 @@ def _write_limit():
                                    + (f" ({said})" if said else "") + f"; {site.ACTION}")
 
 
+def _freecad(eid):
+    if eid in FREECAD and not any(map(shutil.which, FREECAD_PROGRAMS)) and subprocess.run(
+            [sys.executable, "-c", "import FreeCAD"], env=_env(eid), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=120).returncode:
+        raise RuntimeError(f"task {eid} is scored with FreeCAD on this machine, and there is none: put one of "
+                           f"{', '.join(FREECAD_PROGRAMS)} on PATH or FreeCAD's module in the driver's Python, or leave the task out")
+
+
 def _ready(domain, eid):
     """What a VM start of the task needs, checked before one, so it does not fail minutes later; no /dev/kvm is a warning."""
     image = vm_image()
     _task_file(domain, eid)
-    if eid in FREECAD and not any(map(shutil.which, FREECAD_PROGRAMS)) and importlib.util.find_spec("FreeCAD") is None:
-        raise RuntimeError(f"task {eid} is scored with FreeCAD on this machine, and there is none: put one of "
-                           f"{', '.join(FREECAD_PROGRAMS)} on PATH, or leave the task out")
     floor = HEAVY_WRITES.get(eid)
     if floor and os.environ.get("NULLIUS_OPTION_VM_PROVIDER", "docker") == "docker" and any(
             v.isdigit() and int(v) < low for v, low in zip((os.environ.get(n, "none") for n in WRITE_OPTIONS), floor)):
@@ -1092,6 +1097,7 @@ def answer(unit, dir, setup, model, base_url, key, judge=None, **_):
             log = os.path.join(dir, script.replace(".py", ".log"))
             graded = _graded(eid, judge)
             _asks_user(eid, *_paired(model))
+            _freecad(eid)
             vm = _vm(dir, domain, eid)
             spec, meta, argv, extra = _command(dir, model, base_url, key, vm)
             extra.update(graded, OSWORLD2_STOP=_stop_file(dir))
@@ -1398,6 +1404,7 @@ def _agent_setup(domain, eid, dir):
             for name in ("computer-calls.jsonl", "computer-prepare.jsonl", "runner.json"):
                 if os.path.lexists(os.path.join(where, name)):
                     os.replace(os.path.join(where, name), os.path.join(where, f"{name}.{time.time_ns()}"))
+            _freecad(eid)
             vm = _vm(where, domain, eid)
             instruction = _task(where, domain, eid)["instruction"]
             services = _services(held, where, domain, eid, until)

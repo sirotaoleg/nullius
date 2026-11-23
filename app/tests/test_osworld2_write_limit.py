@@ -2,6 +2,7 @@
 A fake docker-py, docker on PATH and sysfs stand in."""
 from __future__ import annotations
 
+import glob
 import importlib.util
 import json
 import os
@@ -551,6 +552,7 @@ class BeforeTheVm(unittest.TestCase):
         self.driver = load_driver(self.tmp)
         self.driver.START_LOCK = os.path.join(self.tmp, "start.lck")
         self.started = []
+        self.real_env = self.driver._env
 
         def started(*a, **kw):
             self.started.append(a)
@@ -598,34 +600,47 @@ class BeforeTheVm(unittest.TestCase):
                 self.score(*case)
         self.assertEqual(len(self.started), 7)
 
-    def freecad(self, programs=(), module=False):
-        found = importlib.util.find_spec
+    def freecad(self, programs=(), module=None):
         for target, name, value in ((self.driver.shutil, "which", lambda p: f"/bin/{p}" if p in programs else None),
-                                    (importlib.util, "find_spec",
-                                     lambda n, *a: (object() if module else None) if n == "FreeCAD" else found(n, *a))):
+                                    (self.driver, "_env", self.real_env)):
             p = mock.patch.object(target, name, value)
             p.start()
             self.addCleanup(p.stop)
+        for f in glob.glob(os.path.join(self.tmp, "*", "FreeCAD.py")) + glob.glob(os.path.join(self.tmp, "FreeCAD.py")):
+            os.remove(f)
+        if module:
+            os.makedirs(os.path.join(self.tmp, module), exist_ok=True)
+            open(os.path.join(self.tmp, module, "FreeCAD.py"), "w").close()
+        if module == "elsewhere":
+            p = mock.patch.object(sys, "path", [os.path.join(self.tmp, module), *sys.path])
+            p.start()
+            self.addCleanup(p.stop)
+            self.assertIsNotNone(importlib.util.find_spec("FreeCAD"))
 
-    def test_103_and_104_are_refused_with_no_freecad(self):
-        self.freecad()
+    def test_103_and_104_are_refused_with_no_freecad_but_to_the_null_control(self):
+        self.freecad(module="elsewhere")
         for eid in ("103", "104"):
-            with self.assertRaisesRegex(self.driver.EnvironmentSetupError, f"task {eid} is scored with FreeCAD"):
+            with self.assertRaises(Started):
                 self.score(eid, "none", "none")
-        with mock.patch.dict(os.environ, {"NULLIUS_OPTION_VM_PROVIDER": "docker", "NULLIUS_OPTION_AGENT": "m3"}), \
-                self.assertRaisesRegex(self.driver.EnvironmentSetupError, "task 104 is scored with FreeCAD"):
-            self.driver.answer("tasks__104", self.unit, "original", "MiniMax-M3", "http://127.0.0.1:9/u1/v1", "k",
-                               judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
+        self.started.clear()
+        with mock.patch.dict(os.environ, {"NULLIUS_OPTION_VM_PROVIDER": "docker", "NULLIUS_OPTION_AGENT": "m3"}):
+            with self.assertRaisesRegex(self.driver.EnvironmentSetupError, "task 104 is scored with FreeCAD"):
+                self.driver.answer("tasks__104", self.unit, "original", "MiniMax-M3", "http://127.0.0.1:9/u1/v1", "k",
+                                   judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
+            with self.assertRaisesRegex(self.driver.EnvironmentSetupError, "task 103 is scored with FreeCAD"):
+                self.driver._agent_setup("tasks", "103", self.unit)
         self.assertEqual(self.started, [])
 
     def test_freecad_found_or_another_task_starts(self):
-        for programs, module, eid in ((("freecadcmd",), False, "103"), (("FreeCADCmd",), False, "104"),
-                                      (("freecad",), False, "103"), (("freecad.cmd",), False, "104"),
-                                      ((), True, "103"), ((), False, "045")):
+        for programs, module, eid in ((("freecadcmd",), None, "103"), (("FreeCADCmd",), None, "104"),
+                                      (("freecad",), None, "103"), (("freecad.cmd",), None, "104"),
+                                      ((), ".", "103"), ((), None, "045")):
             with self.subTest(programs=programs, module=module, eid=eid):
                 self.freecad(programs, module)
-                with self.assertRaises(Started):
-                    self.score(eid, "none", "none")
+                with mock.patch.dict(os.environ, {"NULLIUS_OPTION_VM_PROVIDER": "docker", "NULLIUS_OPTION_AGENT": "m3"}), \
+                        self.assertRaises(Started):
+                    self.driver.answer(f"tasks__{eid}", self.unit, "original", "MiniMax-M3", "http://127.0.0.1:9/u1/v1",
+                                       "k", judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
         self.assertEqual(len(self.started), 6)
 
 
