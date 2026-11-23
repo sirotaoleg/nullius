@@ -572,18 +572,23 @@ class HeavyWrites(unittest.TestCase):
             return self.driver.score(f"tasks__{eid}", self.unit,
                                      judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
 
-    def test_093_and_108_are_refused_below_24_mbps_or_240_iops(self):
-        for eid, mbps, iops in (("093", "6", "60"), ("093", "16", "160"), ("108", "24", "160"), ("108", "16", "none")):
-            with self.assertRaisesRegex(RuntimeError, f"task {eid} writes the most to its VM's disk.*24 MB/s and 240 IOPS"):
-                self.score(eid, mbps, iops)
+    def test_093_is_refused_below_24_mbps_or_240_iops(self):
+        refused = "task 093 writes the most to its VM's disk.*24 MB/s or 240 IOPS"
+        for mbps, iops in (("6", "60"), ("16", "160"), ("24", "160"), ("16", "none")):
+            with self.assertRaisesRegex(self.driver.EnvironmentSetupError, refused):
+                self.score("093", mbps, iops)
+        with mock.patch.dict(os.environ, {"NULLIUS_OPTION_WRITE_MBPS": "6", "NULLIUS_OPTION_WRITE_IOPS": "60"}), \
+                self.assertRaisesRegex(self.driver.EnvironmentSetupError, refused):
+            self.driver.answer("tasks__093", self.unit, "original", "MiniMax-M3", "http://127.0.0.1:9/u1/v1", "k",
+                               judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
         self.assertEqual(self.started, [])
 
     def test_enough_or_no_limit_or_another_task_or_provider_starts(self):
-        for case in (("093", "24", "240"), ("093", "none", "none"), ("108", "32", "none"), ("045", "6", "60"),
-                     ("093", "6", "60", "aws")):
+        for case in (("093", "24", "240"), ("093", "none", "none"), ("093", "32", "none"), ("108", "16", "160"),
+                     ("045", "6", "60"), ("093", "6", "60", "aws")):
             with self.assertRaises(Started):
                 self.score(*case)
-        self.assertEqual(len(self.started), 5)
+        self.assertEqual(len(self.started), 6)
 
 
 class Snapshot(unittest.TestCase):

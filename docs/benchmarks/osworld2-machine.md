@@ -152,7 +152,7 @@ All 108 tasks of release `osworld-v2.1` run on the docker provider, but 103 and 
 
 ## Write limits and load
 
-On a disk shared with others, limit what the VMs write with **Disk write MB/s** and **Disk write IOPS** (`write_mbps`, `write_iops`): each VM's container has a write limit of its own on Docker's disk, so with `-j N` give each the machine's budget divided by N, after the websites' share (at least 80 IOPS) and a GitLab task's, whose GitLab takes the VM's limits again, or 16 MB/s and 160 IOPS where they are none. Where Docker cannot apply a limit (btrfs, zfs, no io controller, cgroup v1), a unit with one fails before its VM starts. A tight limit slows the VM and can change a task's outcome. Tasks 093 and 108 write the most: below 24 MB/s and 240 IOPS they are refused before their VM starts, so run them with at least that.
+On a disk shared with others, limit what the VMs write with **Disk write MB/s** and **Disk write IOPS** (`write_mbps`, `write_iops`): each VM's container has a write limit of its own on Docker's disk, so with `-j N` give each the machine's budget divided by N, after the websites' share (at least 80 IOPS) and a GitLab task's, whose GitLab takes the VM's limits again, or 16 MB/s and 160 IOPS where they are none. Where Docker cannot apply a limit (btrfs, zfs, no io controller, cgroup v1), a unit with one fails before its VM starts. A tight limit slows the VM and can change a task's outcome. Task 093 writes the most: below 24 MB/s or 240 IOPS it is refused before its VM starts.
 
 | Run | Time | Cost |
 | --- | --- | --- |
@@ -161,9 +161,9 @@ On a disk shared with others, limit what the VMs write with **Disk write MB/s** 
 | One task of M3, 500 steps, Thinking adaptive | 5 min to 2 h 20 min on 7 tasks | $0.04 to $5.17 |
 | One task of Muse Spark, 500 steps | About 30 min on 2 tasks | $4.08 to $5.34 |
 
-```bash title="The null control on all 108 tasks, six at a time"
-PYTHONPATH=app python3 -m nullius standard run osworld2 nop --dataset test_v2 -j 6 --provider openrouter \
-  --bench-option websites=10.213.0.1.nip.io --bench-option write_mbps=16 --bench-option write_iops=160
+```bash title="The null control on all 108 tasks, three at a time"
+PYTHONPATH=app python3 -m nullius standard run osworld2 nop --dataset test_v2 -j 3 --provider openrouter \
+  --bench-option websites=10.213.0.1.nip.io --bench-option write_mbps=24 --bench-option write_iops=240
 ```
 
 ## What is pinned
