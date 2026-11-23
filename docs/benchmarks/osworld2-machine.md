@@ -38,7 +38,7 @@ All 108 tasks of release `osworld-v2.1` run on the docker provider, but 103 and 
 | 2, tasks 026 and 041 | The mock websites, step 8, which serve the GitLab that Nullius makes on this machine before the first of them, about 8 minutes once; they run one at a time, each starting GitLab anew from its snapshot, about 5 minutes more |
 | 8 that ask for a proxy | The proxy image, step 7, and for some the mock websites |
 
-103 and 104 are not supported: their evaluate() runs FreeCAD's Python on this machine, which Nullius neither checks nor installs. They stay in the datasets; without FreeCAD the null control scores them 0, and an agent's unit ends in an error.
+103 and 104 are not supported: they are scored with FreeCAD on this machine, which Nullius does not install, and without `freecadcmd`, `FreeCADCmd`, `freecad` or `freecad.cmd` on PATH, or FreeCAD's Python module, they are refused before their VM starts.
 
 **Website host suffix** is a wildcard DNS name of the address the mock websites listen on, the VMs' gateway: `10.213.0.1.nip.io`. **VM provider** offers `docker` alone: the upstream's other providers need cloud accounts or a hypervisor of their own.
 

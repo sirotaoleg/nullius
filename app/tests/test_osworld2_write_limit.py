@@ -541,8 +541,8 @@ class Started(Exception):
     pass
 
 
-class HeavyWrites(unittest.TestCase):
-    """The null control's score of a task that writes the most, refused under a low limit before its VM starts."""
+class BeforeTheVm(unittest.TestCase):
+    """Refusals before a VM starts: a low write limit for a task that writes the most, no FreeCAD for 103 and 104."""
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
@@ -597,6 +597,36 @@ class HeavyWrites(unittest.TestCase):
             with self.assertRaises(Started):
                 self.score(*case)
         self.assertEqual(len(self.started), 7)
+
+    def freecad(self, programs=(), module=False):
+        found = importlib.util.find_spec
+        for target, name, value in ((self.driver.shutil, "which", lambda p: f"/bin/{p}" if p in programs else None),
+                                    (importlib.util, "find_spec",
+                                     lambda n, *a: (object() if module else None) if n == "FreeCAD" else found(n, *a))):
+            p = mock.patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_103_and_104_are_refused_with_no_freecad(self):
+        self.freecad()
+        for eid in ("103", "104"):
+            with self.assertRaisesRegex(self.driver.EnvironmentSetupError, f"task {eid} is scored with FreeCAD"):
+                self.score(eid, "none", "none")
+        with mock.patch.dict(os.environ, {"NULLIUS_OPTION_VM_PROVIDER": "docker", "NULLIUS_OPTION_AGENT": "m3"}), \
+                self.assertRaisesRegex(self.driver.EnvironmentSetupError, "task 104 is scored with FreeCAD"):
+            self.driver.answer("tasks__104", self.unit, "original", "MiniMax-M3", "http://127.0.0.1:9/u1/v1", "k",
+                               judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
+        self.assertEqual(self.started, [])
+
+    def test_freecad_found_or_another_task_starts(self):
+        for programs, module, eid in ((("freecadcmd",), False, "103"), (("FreeCADCmd",), False, "104"),
+                                      (("freecad",), False, "103"), (("freecad.cmd",), False, "104"),
+                                      ((), True, "103"), ((), False, "045")):
+            with self.subTest(programs=programs, module=module, eid=eid):
+                self.freecad(programs, module)
+                with self.assertRaises(Started):
+                    self.score(eid, "none", "none")
+        self.assertEqual(len(self.started), 6)
 
 
 class Snapshot(unittest.TestCase):

@@ -112,6 +112,8 @@ JUDGED = frozenset("003 007 008 019 025 031 035 041 070 074 075 077 078 079 081 
 ASKS_USER = frozenset("007 024 026 034 095 098".split())
 RETRIES_SITE_READS = frozenset({"069"})
 HEAVY_WRITES = {"093": (24, 240), "108": (16, 160)}
+FREECAD = frozenset({"103", "104"})
+FREECAD_PROGRAMS = ("freecadcmd", "FreeCADCmd", "freecad", "freecad.cmd")
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
              "010": ("email_010.tar.gz",)}
@@ -904,6 +906,9 @@ def _ready(domain, eid):
     """What a VM start of the task needs, checked before one, so it does not fail minutes later; no /dev/kvm is a warning."""
     image = vm_image()
     _task_file(domain, eid)
+    if eid in FREECAD and not any(map(shutil.which, FREECAD_PROGRAMS)) and importlib.util.find_spec("FreeCAD") is None:
+        raise RuntimeError(f"task {eid} is scored with FreeCAD on this machine, and there is none: put one of "
+                           f"{', '.join(FREECAD_PROGRAMS)} on PATH, or leave the task out")
     floor = HEAVY_WRITES.get(eid)
     if floor and os.environ.get("NULLIUS_OPTION_VM_PROVIDER", "docker") == "docker" and any(
             v.isdigit() and int(v) < low for v, low in zip((os.environ.get(n, "none") for n in WRITE_OPTIONS), floor)):
