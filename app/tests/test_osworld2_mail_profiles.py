@@ -110,17 +110,64 @@ class SignedOut(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "p.zip holds a mail profile in a zip"):
             self.driver._assets(self.unit, "007")
 
-    def test_the_copy_is_the_units_alone_and_goes_with_it(self):
+    def test_the_copy_is_the_units_alone_made_anew_each_time_and_goes_with_it(self):
         self.add("shared", "profile.tar.gz")
+        with open(os.path.join(self.driver.ASSETS, "shared", "profile.tar.gz.part"), "wb") as f:
+            f.write(b"kept")
         os.makedirs(os.path.join(self.unit, "assets"))
         os.symlink(os.path.join(self.driver.ASSETS, "task_006"), os.path.join(self.unit, "assets", "task_006"))
-        before = self.tree()
-        for eid in ("006", "007"):
+        archive(os.path.join(self.unit, "assets", "left.tar.gz"), self.files)
+        before = {p: b for p, b in self.tree().items() if not p.startswith(self.unit + os.sep)}
+        for eid in ("006", "007", "006"):
             self.driver._assets(self.unit, eid)
         after = self.tree()
         self.assertEqual({p: b for p, b in after.items() if not p.startswith(self.unit + os.sep)}, before)
+        self.assertFalse(os.path.lexists(os.path.join(self.unit, "assets", "left.tar.gz")))
         shutil.rmtree(self.unit)
         self.assertEqual(self.tree(), before)
+
+    def test_a_profile_at_the_archives_root_or_behind_a_zip_is_found_and_signed_out(self):
+        import zipfile
+        self.add("shared", "root.tar.gz", files={n[len(PROFILE):]: b for n, b in self.files.items()})
+        both = self.add("shared", "both.tar.gz")
+        with open(both, "ab") as f, zipfile.ZipFile(f, "w") as z:
+            z.writestr("note.txt", "x")
+        root = self.driver._assets(self.unit, "007")
+        got = members(os.path.join(root, "shared", "root.tar.gz"))
+        self.assertEqual(sorted(got), sorted(n[len(PROFILE):] for n in self.files if n[len(PROFILE):] not in SIGNED_IN))
+        self.assertNotIn("true", got["prefs.js"].decode())
+        self.assertTrue(got["prefs.js"].decode().endswith('user_pref("offline.startup_state", 3);\n'))
+        got = members(os.path.join(root, "shared", "both.tar.gz"))
+        self.assertFalse(any(n[len(PROFILE):] in SIGNED_IN for n in got))
+
+    def test_a_mail_profile_not_in_gzip_is_refused(self):
+        with tarfile.open(os.path.join(self.driver.ASSETS, "shared", "plain.tar"), "w") as t:
+            info = tarfile.TarInfo(PROFILE + "prefs.js")
+            info.size = len(PREFS)
+            t.addfile(info, io.BytesIO(PREFS.encode()))
+        with self.assertRaisesRegex(RuntimeError, "plain.tar is a mail profile not in gzip"):
+            self.driver._assets(self.unit, "007")
+
+    def test_an_archive_read_only_in_part_is_refused_and_read_again_next_time(self):
+        cut = os.path.join(self.driver.ASSETS, "shared", "cut.tar")
+        with tarfile.open(cut, "w") as t:
+            data = PREFS.encode() + b"//" + b"x" * 4000 + b"\n"
+            info = tarfile.TarInfo(PROFILE + "prefs.js")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+        os.truncate(cut, 1500)
+        with self.assertRaisesRegex(RuntimeError, "cut.tar in the assets cannot be read through"):
+            self.driver._assets(self.unit, "007")
+        os.remove(cut)
+        if os.geteuid() == 0:
+            return
+        shut = self.add("shared", "shut.tar.gz")
+        os.chmod(shut, 0)
+        with self.assertRaisesRegex(RuntimeError, "shut.tar.gz in the assets cannot be read through"):
+            self.driver._assets(self.unit, "007")
+        os.chmod(shut, 0o644)
+        root = self.driver._assets(self.unit, "007")
+        self.assertNotIn("true", members(os.path.join(root, "shared", "shut.tar.gz"))[PROFILE + "prefs.js"].decode())
 
     def test_the_profile_loses_its_sign_ins_and_keeps_its_mail(self):
         root = self.driver._assets(self.unit, "006")
@@ -138,7 +185,7 @@ class SignedOut(unittest.TestCase):
         for rel in ("shared", "task_007", os.path.join("task_006", "sheet.xlsx")):
             self.assertEqual(os.path.realpath(os.path.join(root, rel)),
                              os.path.realpath(os.path.join(self.driver.ASSETS, rel)))
-        self.assertNotIn("thunderbird-profile.tar.gz.part", os.listdir(os.path.join(root, "task_006")))
+        self.assertEqual([n for n in os.listdir(os.path.join(root, "task_006")) if n.endswith(".part")], [])
 
     def test_the_copy_is_the_same_each_time(self):
         root = self.driver._assets(self.unit, "006")
@@ -193,6 +240,23 @@ class SignedOut(unittest.TestCase):
                     start()
         self.assertEqual([e["OSWORLD_FILE_BASE_URL"] for e in envs], [os.path.join(self.unit, "assets")] * 3)
         self.assertEqual(self.driver._env("007")["OSWORLD_FILE_BASE_URL"], self.driver.ASSETS)
+
+    def test_the_agents_desktop_gets_the_copy(self):
+        self.add("shared", "profile.tar.gz")
+        made = []
+
+        def env(eid, assets=None, **extra):
+            made.append(assets)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(self.driver, "_vm", lambda *a: "vm"), mock.patch.object(self.driver, "_env", env), \
+                mock.patch.object(self.driver, "_task", lambda *_: {"instruction": "", "proxy": False}), \
+                self.assertRaises(KeyboardInterrupt):
+            self.driver.setup("tasks__012", self.unit, participant="agent")
+        self.assertEqual(made, [os.path.join(self.driver._runner_dir(self.unit), "assets")])
+        got = members(os.path.join(made[0], "shared", "profile.tar.gz"))
+        self.assertFalse(any(n[len(PROFILE):] in SIGNED_IN for n in got))
+        self.assertNotIn("true", got[PROFILE + "prefs.js"].decode())
 
 
 if __name__ == "__main__":

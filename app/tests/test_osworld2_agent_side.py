@@ -187,6 +187,7 @@ class AgentSide(unittest.TestCase):
         up = os.path.join(self.tmp, "upstream")
         classes = os.path.join(up, "evaluation_examples", "task_class")
         os.makedirs(classes)
+        os.makedirs(os.path.join(up, "cache", "osworld_v2_assets"))
         for name in LOOP[:4]:
             os.symlink(os.path.join(OSWORLD2, name), os.path.join(up, name))
         shutil.copytree(os.path.join(FAKE, "desktop_env"), os.path.join(up, "desktop_env"))

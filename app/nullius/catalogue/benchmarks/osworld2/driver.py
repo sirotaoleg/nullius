@@ -4,7 +4,7 @@ It runs the Original setup, the null control and an agent (runner.py).
 OSWorld-V2's own code at the tested commit ($NULLIUS_UPSTREAM) loads, acts and
 scores, in processes of its own; this driver imports none of it. Each unit's
 script runs in the unit's folder, so its logs and results stay with the trial.
-Every process gets the assets folder (_assets) as OSWORLD_FILE_BASE_URL and the
+Every process with a VM gets the unit's copy of the assets (_assets) as OSWORLD_FILE_BASE_URL and the
 startup folder first on PYTHONPATH. Mock websites (websites.py), GitLab (gitlab_server.py) and a proxy
 (proxy.py) are the unit's services.
 
@@ -36,6 +36,7 @@ import gzip
 import importlib.util
 import io
 import json
+import lzma
 import os
 import queue
 import re
@@ -123,7 +124,7 @@ FREECAD_PROGRAMS = ("freecadcmd", "FreeCADCmd", "freecad", "freecad.cmd")
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
              "010": ("email_010.tar.gz",)}
-SIGN_INS = re.compile(r"(?:^|/)(?:logins[^/]*\.json|signons[^/]*|cookies\.sqlite[^/]*|user\.js)$|/storage/default(?:/|$)")
+SIGN_INS = re.compile(r"(?:^|/)(?:logins[^/]*\.json|signons[^/]*|cookies\.sqlite[^/]*|user\.js)$|(?:^|/)storage/default(?:/|$)")
 ONLINE = re.compile(r'^(\s*user_pref\("mail\.server\.\w+\.(?:login_at_startup|check_new_mail|download_on_biff)",\s*)'
                     r'true(\s*\);)[ \t\r]*$', re.M)
 OFFLINE = 'user_pref("offline.autoDetect", false);\nuser_pref("offline.startup_state", 3);\n'
@@ -694,6 +695,10 @@ def _assets(dir, eid):
         missing = sorted(set(MAILBOXES[eid]) - set(os.listdir(own)))
         if missing:
             raise RuntimeError(f"no {', '.join(missing)} in {own}")
+    if os.path.isdir(root) and not os.path.islink(root):
+        shutil.rmtree(root)
+    elif os.path.lexists(root):
+        os.remove(root)
     _mirror(ASSETS, root, _profiles() | {os.path.join(own, n) for n in MAILBOXES.get(eid, ())})
     return root
 
@@ -711,45 +716,54 @@ def _profiles():
                 st = os.stat(p)
             except OSError:
                 continue
-            if _SEEN.get(p, (None,))[0] != (st.st_size, st.st_mtime_ns):
-                _SEEN[p] = (st.st_size, st.st_mtime_ns), _mail_profile(p)
+            key = st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+            if _SEEN.get(p, (None,))[0] != key:
+                _SEEN[p] = key, _mail_profile(p)
             if _SEEN[p][1]:
                 found.add(p)
     return found
 
 
 def _mail_profile(path):
+    """Whether the file is a tar holding a mail profile; one read only in part, or a zip holding one, is refused."""
     try:
-        if zipfile.is_zipfile(path):
+        try:
+            t = tarfile.open(path)
+        except tarfile.ReadError:
+            t = None
+        with t or contextlib.nullcontext():
+            found = t is not None and any(os.path.basename(m.name) == "prefs.js" and m.isfile()
+                                          and b"mail.server." in t.extractfile(m).read() for m in t)
+        zipped = zipfile.is_zipfile(path)
+        if zipped:
             with zipfile.ZipFile(path) as z:
-                held = any(os.path.basename(n) == "prefs.js" and b"mail.server." in z.read(n) for n in z.namelist())
-        else:
-            with tarfile.open(path) as t:
-                return any(os.path.basename(m.name) == "prefs.js" and m.isfile()
-                           and b"mail.server." in t.extractfile(m).read() for m in t)
-    except (OSError, EOFError, zlib.error, tarfile.TarError, zipfile.BadZipFile):
-        return False
-    if held:
+                zipped = any(os.path.basename(n) == "prefs.js" and b"mail.server." in z.read(n) for n in z.namelist())
+    except (OSError, EOFError, zlib.error, lzma.LZMAError, tarfile.TarError, zipfile.BadZipFile) as e:
+        raise RuntimeError(f"{os.path.basename(path)} in the assets cannot be read through to look for a mail "
+                           f"profile: {type(e).__name__}") from None
+    if zipped:
         raise RuntimeError(f"{os.path.basename(path)} holds a mail profile in a zip, which this driver does not rewrite")
-    return False
+    return found
 
 
 def _mirror(src, dst, profiles):
-    if os.path.islink(dst):
-        os.remove(dst)
-    os.makedirs(dst, exist_ok=True)
+    os.makedirs(dst)
     for n in os.listdir(src):
         s, d = os.path.join(src, n), os.path.join(dst, n)
         if s in profiles:
             _signed_out(s, d)
         elif any(p.startswith(s + os.sep) for p in profiles):
             _mirror(s, d, profiles)
-        elif not os.path.lexists(d):
+        else:
             os.symlink(s, d)
 
 
 def _signed_out(src, dst):
-    with tarfile.open(src) as old, open(dst + ".part", "wb") as raw, \
+    with open(src, "rb") as f:
+        if f.read(2) != b"\x1f\x8b":
+            raise RuntimeError(f"{os.path.basename(src)} is a mail profile not in gzip, which this driver does not rewrite")
+    fd, part = tempfile.mkstemp(".part", dir=os.path.dirname(dst))
+    with tarfile.open(src) as old, open(fd, "wb") as raw, \
             gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz, tarfile.open(fileobj=gz, mode="w") as new:
         for m in old:
             name = os.path.normpath(m.name)
@@ -758,12 +772,13 @@ def _signed_out(src, dst):
             if SIGN_INS.search(name):
                 continue
             data = old.extractfile(m) if m.isfile() else None
-            if data and name.endswith("/prefs.js"):
+            if data and os.path.basename(name) == "prefs.js":
                 text = (ONLINE.sub(r"\1false\2", data.read().decode("utf-8")).rstrip("\n") + "\n" + OFFLINE).encode("utf-8")
                 data, m.size = io.BytesIO(text), len(text)
                 m.pax_headers.pop("size", None)
             new.addfile(m, data)
-    os.replace(dst + ".part", dst)
+    os.chmod(part, 0o644)
+    os.replace(part, dst)
 
 
 def _port_free(eid, port):

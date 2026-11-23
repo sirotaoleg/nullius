@@ -16,7 +16,7 @@ The minimum is one task at a time:
 | Scoring programs | ImageMagick (`identify`, `convert`), `ffmpeg`, `ffprobe` and `tesseract`: the evaluate() of tasks 025, 046, 051, 056, 085 and 095 runs them on this machine, and a run, the null control's too, is refused until they are on PATH |
 | Programs | `git`, `python3`, `uv`, `curl` |
 | CPU and memory | One VM, which the upstream's docker provider sets to 4 cores and 4 GB of memory, beside the driver, the agent's script and the services below |
-| Disk | About 15 GB for the VM image (30 GB while its zip is unpacked), 5 GB for the gated assets, 2 GB for the driver's environment; under Docker's root, 2 GB for each running VM, about 20 GB for the mock websites' images (25 GB free while they build) and 7 GB for GitLab's; about 0.5 GB of output for 100 steps of M3. Measured: leave room above it |
+| Disk | About 15 GB for the VM image (30 GB while its zip is unpacked), 5 GB for the gated assets, 2 GB for the driver's environment; under Docker's root, 2 GB for each running VM, about 20 GB for the mock websites' images (25 GB free while they build) and 7 GB for GitLab's; about 0.5 GB of output for 100 steps of M3, and 36 MB in each try's folder for its copy of the assets with their mail profiles signed out. Measured: leave room above it |
 | Network | GitHub, PyPI, Hugging Face and Docker Hub for the installs and the first GitLab task; OpenRouter for the agents and the LLM grader; the public internet for 29 tasks, 8 of them through a proxy of their own, which also install from the Ubuntu mirrors |
 | KVM | Recommended: `/dev/kvm`; without it the upstream runs the VM unaccelerated, slower |
 
