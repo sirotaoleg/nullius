@@ -537,6 +537,55 @@ class Turn(unittest.TestCase):
         self.assertGreater(original["turn_seconds"], 2 * 500 * 32)
 
 
+class Started(Exception):
+    pass
+
+
+class HeavyWrites(unittest.TestCase):
+    """The null control's score of a task that writes the most, refused under a low limit before its VM starts."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.unit = os.path.join(self.tmp, "unit")
+        os.makedirs(self.unit)
+        self.driver = load_driver(self.tmp)
+        self.driver.START_LOCK = os.path.join(self.tmp, "start.lck")
+        self.started = []
+
+        def started(*a, **kw):
+            self.started.append(a)
+            raise Started()
+
+        for target, name, value in ((self.driver, "vm_image", lambda: "image"), (self.driver, "_task_file", lambda *a: None),
+                                    (self.driver, "_provider_image", lambda: None), (self.driver, "_write_limit", lambda: None),
+                                    (self.driver, "_nat", lambda: True), (self.driver, "ASSETS", self.tmp),
+                                    (self.driver, "_services", lambda *a, **kw: {}), (self.driver, "_assets", lambda *a: "assets"),
+                                    (self.driver, "_env", lambda *a, **kw: {}), (self.driver, "_run", started),
+                                    (self.driver._startup(), "network", lambda docker: "nullius-osworld2")):
+            p = mock.patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def score(self, eid, mbps, iops, provider="docker"):
+        with mock.patch.dict(os.environ, {"NULLIUS_OPTION_WRITE_MBPS": mbps, "NULLIUS_OPTION_WRITE_IOPS": iops,
+                                          "NULLIUS_OPTION_VM_PROVIDER": provider}):
+            return self.driver.score(f"tasks__{eid}", self.unit,
+                                     judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
+
+    def test_093_and_108_are_refused_below_24_mbps_or_240_iops(self):
+        for eid, mbps, iops in (("093", "6", "60"), ("093", "16", "160"), ("108", "24", "160"), ("108", "16", "none")):
+            with self.assertRaisesRegex(RuntimeError, f"task {eid} writes the most to its VM's disk.*24 MB/s and 240 IOPS"):
+                self.score(eid, mbps, iops)
+        self.assertEqual(self.started, [])
+
+    def test_enough_or_no_limit_or_another_task_or_provider_starts(self):
+        for case in (("093", "24", "240"), ("093", "none", "none"), ("108", "32", "none"), ("045", "6", "60"),
+                     ("093", "6", "60", "aws")):
+            with self.assertRaises(Started):
+                self.score(*case)
+        self.assertEqual(len(self.started), 5)
+
+
 class Snapshot(unittest.TestCase):
     def test_a_hosts_snapshot_carries_the_startup_file(self):
         from nullius.standard import payload
