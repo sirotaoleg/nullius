@@ -127,6 +127,8 @@ SNAPS = {"093": ("openboard", "core24", "kf6-core24", "ffmpeg-2404", "mesa-2404"
                  "gtk-common-themes")}
 SNAP_STORE = "https://api.snapcraft.io/v2/snaps/info/{}?fields=revision,download"
 SNAP_SECONDS = 1200
+SNAP_TRIES = 3
+SNAP_PAUSE = 10
 SNAP_ENV = "OSWORLD2_SNAPS"
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
@@ -1091,18 +1093,38 @@ def _snap(name, where, until):
     dl = entry["download"]
     path = os.path.join(where, dl["sha3-384"])
     if not os.path.exists(path):
-        digest = hashlib.sha3_384()
-        with urllib.request.urlopen(dl["url"], timeout=60) as r, open(path + ".part", "wb") as f:
-            while chunk := r.read(1 << 20):
-                if time.time() > until:
-                    raise TimeoutError(f"{name} took longer than {SNAP_SECONDS} s")
-                digest.update(chunk)
-                f.write(chunk)
+        digest, had = hashlib.sha3_384(), 0
+        if os.path.exists(path + ".part"):
+            with open(path + ".part", "rb") as f:
+                while chunk := f.read(1 << 20):
+                    digest.update(chunk)
+                    had += len(chunk)
+        asked = urllib.request.Request(dl["url"], headers={"Range": f"bytes={had}-"} if had else {})
+        with urllib.request.urlopen(asked, timeout=60) as r:
+            if had and r.status != 206:
+                digest, had = hashlib.sha3_384(), 0
+            with open(path + ".part", "ab" if had else "wb") as f:
+                while chunk := r.read(1 << 20):
+                    if time.time() > until:
+                        raise TimeoutError(f"{name} took longer than {SNAP_SECONDS} s; the next unit goes on from here")
+                    digest.update(chunk)
+                    f.write(chunk)
         if digest.hexdigest() != dl["sha3-384"] or os.path.getsize(path + ".part") != dl["size"]:
             os.remove(path + ".part")
             raise ValueError(f"{name} is not the store's file")
         os.replace(path + ".part", path)
     return {"name": name, "revision": entry["revision"], "sha3_384": dl["sha3-384"], "size": dl["size"], "file": path}
+
+
+def _tried(name, where, until):
+    """_snap, again after a dropped connection while there is time."""
+    for tries in range(SNAP_TRIES, 0, -1):
+        try:
+            return _snap(name, where, until)
+        except OSError:
+            if tries == 1 or time.time() + SNAP_PAUSE > until:
+                raise
+            time.sleep(SNAP_PAUSE)
 
 
 def _snaps(eid):
@@ -1116,7 +1138,7 @@ def _snaps(eid):
         with open(os.path.join(where, ".lock"), "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             until = time.time() + SNAP_SECONDS
-            listed = [_snap(name, where, until) for name in SNAPS[eid]]
+            listed = [_tried(name, where, until) for name in SNAPS[eid]]
             with open(os.path.join(where, f"{eid}.json.part"), "w", encoding="utf-8") as f:
                 json.dump(listed, f)
             os.replace(os.path.join(where, f"{eid}.json.part"), os.path.join(where, f"{eid}.json"))

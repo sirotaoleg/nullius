@@ -21,20 +21,30 @@ BLOB = b"snap file" * 1000
 SHA = hashlib.sha3_384(BLOB).hexdigest()
 
 
-def store(blob=BLOB, size=None, sha=SHA, asked=None):
+class Answer(io.BytesIO):
+    def __init__(self, data, status=200):
+        super().__init__(data)
+        self.status = status
+
+
+def store(blob=BLOB, size=None, sha=SHA, asked=None, ranges=True):
     def urlopen(req, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else req
         if asked is not None:
-            asked.append(url)
+            asked.append(url if "/v2/snaps/info/" in url or not getattr(req, "get_header", None) or not
+                         req.get_header("Range") else f"{url} {req.get_header('Range')}")
         if "/v2/snaps/info/" in url:
             name = url.rsplit("/", 1)[1].split("?")[0]
-            return io.BytesIO(json.dumps({"channel-map": [
+            return Answer(json.dumps({"channel-map": [
                 {"channel": {"architecture": "arm64", "track": "latest", "risk": "stable"}, "revision": 1,
                  "download": {"sha3-384": "x", "size": 1, "url": "https://cdn/arm"}},
                 {"channel": {"architecture": "amd64", "track": "latest", "risk": "stable"}, "revision": 7,
                  "download": {"sha3-384": sha, "size": len(blob) if size is None else size,
                               "url": f"https://cdn/{name}"}}]}).encode())
-        return io.BytesIO(blob)
+        wanted = req.get_header("Range") if hasattr(req, "get_header") else None
+        if wanted and ranges:
+            return Answer(blob[int(wanted[len("bytes="):-1]):], 206)
+        return Answer(blob)
     return urlopen
 
 
@@ -74,9 +84,41 @@ class Host(unittest.TestCase):
             raise OSError("no route")
 
         with mock.patch.object(self.driver.urllib.request, "urlopen", down), \
-                mock.patch("sys.stderr", new_callable=io.StringIO):
+                mock.patch("sys.stderr", new_callable=io.StringIO), mock.patch.object(self.driver.time, "sleep") as slept:
             self.driver._snaps("093")
+        self.assertEqual(slept.call_count, self.driver.SNAP_TRIES - 1)
         self.assertEqual(self.driver._snap_env("093"), {})
+
+    def test_a_dropped_connection_is_tried_again(self):
+        good, dropped = store(), []
+
+        def flaky(req, timeout=None):
+            if len(dropped) < 2:
+                dropped.append(req)
+                raise OSError("EOF")
+            return good(req, timeout)
+
+        with mock.patch.object(self.driver.urllib.request, "urlopen", flaky), \
+                mock.patch.object(self.driver.time, "sleep") as slept:
+            self.driver._snaps("093")
+        self.assertEqual((len(dropped), slept.call_count), (2, 2))
+        self.assertTrue(self.driver._snap_env("093"))
+
+    def test_a_part_left_by_an_earlier_unit_is_gone_on_from_or_made_again(self):
+        for ranges in (True, False):
+            with self.subTest(ranges=ranges):
+                shutil.rmtree(self.cache, ignore_errors=True)
+                os.makedirs(self.cache)
+                with open(os.path.join(self.cache, SHA + ".part"), "wb") as f:
+                    f.write(BLOB[:len(BLOB) // 2])
+                asked = []
+                with mock.patch.object(self.driver.urllib.request, "urlopen", store(ranges=ranges, asked=asked)):
+                    self.driver._snaps("093")
+                self.assertEqual([u for u in asked if u.startswith("https://cdn/")],
+                                 [f"https://cdn/openboard bytes={len(BLOB) // 2}-"])
+                with open(os.path.join(self.cache, SHA), "rb") as f:
+                    self.assertEqual(f.read(), BLOB)
+                self.assertFalse(os.path.exists(os.path.join(self.cache, SHA + ".part")))
 
     def test_another_task_asks_the_store_nothing(self):
         with mock.patch.object(self.driver.urllib.request, "urlopen", side_effect=AssertionError("asked")):
