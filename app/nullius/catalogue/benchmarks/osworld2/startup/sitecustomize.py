@@ -54,6 +54,9 @@ DOCKER_PROVIDER = "desktop_env.providers.docker.provider"
 STOP = "OSWORLD2_STOP"
 MARK = "_nullius_osworld2"
 HIDDEN = "<proxy password>"
+SNAPS = "OSWORLD2_SNAPS"
+SNAP_CACHE = "/var/lib/snapd/cache"
+SNAP_UPLOADS = "/tmp/nullius-snaps"
 
 
 class WriteLimitError(RuntimeError):
@@ -329,6 +332,77 @@ def floor_desktop_env(module):
     cls.__init__ = wrapped
 
 
+def _guest(controller, command):
+    import requests
+    said = requests.post(controller.http_server + "/setup/execute", json={"command": command, "shell": True}, timeout=300)
+    return said.status_code == 200 and str(said.json().get("returncode", 1)) == "0"
+
+
+def _root(controller, command):
+    return _guest(controller, f"echo '{controller.client_password}' | sudo -S sh -c '{command}'")
+
+
+def _seeded(controller, use_proxy, environ=os.environ):
+    """Each listed snap the guest lacks, put into snapd's download cache by its sha3-384 before the task's setup:
+    snapd links a file there for the revision the store names and downloads the snap itself otherwise."""
+    try:
+        with open(environ[SNAPS], encoding="utf-8") as f:
+            listed = json.load(f)
+        if not controller.ensure_ready(use_proxy) or not _guest(controller, f"mkdir -p {SNAP_UPLOADS}"):
+            return []
+        placed = []
+        for snap in listed:
+            if not os.path.exists(snap["file"]) or _guest(controller, f"snap list {snap['name']}"):
+                continue
+            upload = f"{SNAP_UPLOADS}/{snap['sha3_384']}"
+            controller._upload_file_setup([{"local_path": snap["file"], "path": upload}])
+            cached = f"{SNAP_CACHE}/{snap['sha3_384']}"
+            if _root(controller, f"mkdir -p {SNAP_CACHE} && mv {upload} {cached} && chown root:root {cached} && "
+                                 f"chmod 0644 {cached} && touch {cached}"):
+                placed.append(snap)
+        return placed
+    except Exception as e:
+        logging.getLogger("nullius.osworld2").warning("snap cache not used: %s", type(e).__name__)
+        return []
+
+
+def _hits(controller, placed):
+    """Hit: snapd's installed file is the cached one (one inode); miss: snapd downloaded its own."""
+    for snap in placed:
+        cached = f"{SNAP_CACHE}/{snap['sha3_384']}"
+        used = f"/var/lib/snapd/snaps/{snap['name']}_{snap['revision']}.snap"
+        try:
+            hit = _root(controller, f'test -e {cached} && test -e {used} && test "$(stat -c %i {cached})" = "$(stat -c %i {used})"')
+        except Exception:
+            hit = False
+        logging.getLogger("nullius.osworld2").info("snap cache %s: %s", snap["name"], "hit" if hit else "miss")
+
+
+def seed_snaps(module):
+    """The task's setup, as the upstream runs it, after _seeded when the driver listed snaps for the task."""
+    cls = getattr(module, "DesktopEnv", None)
+    setup = getattr(cls, "_setup_task", None)
+    if setup is None or getattr(setup, MARK, False):
+        return
+
+    @functools.wraps(setup)
+    def wrapped(self, *args, **kwargs):
+        use_proxy = args[1] if len(args) > 1 else kwargs.get("use_proxy", False)
+        placed = _seeded(self.setup_controller, use_proxy) if os.environ.get(SNAPS) else []
+        try:
+            return setup(self, *args, **kwargs)
+        finally:
+            _hits(self.setup_controller, placed)
+
+    setattr(wrapped, MARK, True)
+    cls._setup_task = wrapped
+
+
+def desktop_env(module):
+    floor_desktop_env(module)
+    seed_snaps(module)
+
+
 def queue_starts(module):
     """Every VM start waits its turn for the provider's port lock, a restart as the first start."""
     module.LOCK_TIMEOUT = -1
@@ -414,7 +488,7 @@ class _Floor:
 
 
 setattr(_Floor, MARK, True)
-PATCHES = {DESKTOP_ENV: floor_desktop_env, EPISODE: stop_when_asked, DOCKER_PROVIDER: queue_starts}
+PATCHES = {DESKTOP_ENV: desktop_env, EPISODE: stop_when_asked, DOCKER_PROVIDER: queue_starts}
 
 
 def wrap_desktop_env():

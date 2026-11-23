@@ -154,6 +154,8 @@ All 108 tasks of release `osworld-v2.1` run on the docker provider, but 103 and 
 
 On a disk shared with others, limit what the VMs write with **Disk write MB/s** and **Disk write IOPS** (`write_mbps`, `write_iops`): each VM's container has a write limit of its own on Docker's disk, so with `-j N` give each the machine's budget divided by N, after the websites' share (at least 80 IOPS) and a GitLab task's, whose GitLab takes the VM's limits again, or 16 MB/s and 160 IOPS where they are none. Where Docker cannot apply a limit (btrfs, zfs, no io controller, cgroup v1), a unit with one fails before its VM starts. A tight limit slows the VM and can change a task's outcome. Tasks 093 and 108 write the most: they are refused before their VM starts below 24 MB/s or 240 IOPS for 093, 16 MB/s or 160 IOPS for 108.
 
+Task 093's setup installs snaps of about 2.5 GB, more than a slow link brings in its 600 s. Nullius downloads them once into the upstream's `cache/snaps`, checked against the Snap Store's digest and size, and puts them into the guest's snapd download cache before the setup; snapd takes a file there only for the revision the store names, and downloads a newer one itself.
+
 | Run | Time | Cost |
 | --- | --- | --- |
 | The null control, all 108 tasks | 7 to 10 hours of units; 1 h 23 min seven VMs at a time, a GitLab task counting as two, 2 h 18 min four at a time beside agent runs | About $0.15, the LLM grader |

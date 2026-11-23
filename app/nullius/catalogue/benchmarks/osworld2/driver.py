@@ -33,6 +33,7 @@ import errno
 import fcntl
 import glob
 import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -50,6 +51,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.request
 import zipfile
 import zlib
 
@@ -121,6 +123,11 @@ RETRIES_SITE_READS = frozenset({"069"})
 HEAVY_WRITES = {"093": (24, 240), "108": (16, 160)}
 FREECAD = frozenset({"103", "104"})
 FREECAD_PROGRAMS = ("freecadcmd", "FreeCADCmd", "freecad", "freecad.cmd")
+SNAPS = {"093": ("openboard", "core24", "kf6-core24", "ffmpeg-2404", "mesa-2404", "lxqt-support-core24",
+                 "gtk-common-themes")}
+SNAP_STORE = "https://api.snapcraft.io/v2/snaps/info/{}?fields=revision,download"
+SNAP_SECONDS = 1200
+SNAP_ENV = "OSWORLD2_SNAPS"
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
              "010": ("email_010.tar.gz",)}
@@ -685,7 +692,12 @@ def _env(eid, assets=ASSETS, **extra):
     """GitLab's token only for a task that needs it."""
     return dict(os.environ, PYTHONPATH=os.pathsep.join([os.path.dirname(os.path.abspath(SITE)), UP]),
                 PYTHONIOENCODING="utf-8", OSWORLD_FILE_BASE_URL=assets, **websites.env(), **gitlab_server.env(eid),
-                **extra)
+                **_snap_env(eid), **extra)
+
+
+def _snap_env(eid):
+    listed = os.path.join(_snap_cache(), f"{eid}.json")
+    return {SNAP_ENV: listed} if eid in SNAPS and os.path.exists(listed) else {}
 
 
 def _assets(dir, eid):
@@ -1065,9 +1077,58 @@ def _workspace(dir):
     os.makedirs(os.path.join(dir, "logs"), exist_ok=True)
 
 
+def _snap_cache():
+    return os.path.join(UP, "cache", "snaps")
+
+
+def _snap(name, where, until):
+    """The store's latest/stable amd64 revision of a public snap, in ``where`` by its sha3-384, downloaded once and
+    kept only with the store's digest and size."""
+    asked = urllib.request.Request(SNAP_STORE.format(name), headers={"Snap-Device-Series": "16"})
+    with urllib.request.urlopen(asked, timeout=60) as r:
+        entry = next(c for c in json.load(r)["channel-map"] if c["channel"]["architecture"] == "amd64"
+                     and c["channel"]["track"] == "latest" and c["channel"]["risk"] == "stable")
+    dl = entry["download"]
+    path = os.path.join(where, dl["sha3-384"])
+    if not os.path.exists(path):
+        digest = hashlib.sha3_384()
+        with urllib.request.urlopen(dl["url"], timeout=60) as r, open(path + ".part", "wb") as f:
+            while chunk := r.read(1 << 20):
+                if time.time() > until:
+                    raise TimeoutError(f"{name} took longer than {SNAP_SECONDS} s")
+                digest.update(chunk)
+                f.write(chunk)
+        if digest.hexdigest() != dl["sha3-384"] or os.path.getsize(path + ".part") != dl["size"]:
+            os.remove(path + ".part")
+            raise ValueError(f"{name} is not the store's file")
+        os.replace(path + ".part", path)
+    return {"name": name, "revision": entry["revision"], "sha3_384": dl["sha3-384"], "size": dl["size"], "file": path}
+
+
+def _snaps(eid):
+    """The task's snaps on this machine for the guest's download cache, listed in <cache>/<eid>.json; when they cannot
+    be had, the guest downloads them itself, as without the cache."""
+    if eid not in SNAPS:
+        return
+    where = _snap_cache()
+    try:
+        os.makedirs(where, exist_ok=True)
+        with open(os.path.join(where, ".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            until = time.time() + SNAP_SECONDS
+            listed = [_snap(name, where, until) for name in SNAPS[eid]]
+            with open(os.path.join(where, f"{eid}.json.part"), "w", encoding="utf-8") as f:
+                json.dump(listed, f)
+            os.replace(os.path.join(where, f"{eid}.json.part"), os.path.join(where, f"{eid}.json"))
+    except Exception as e:
+        print(f"task {eid}: its snaps are not cached on this machine ({type(e).__name__}: {e}); the guest downloads "
+              "them itself", file=sys.stderr, flush=True)
+
+
 def _vm(dir, domain, eid):
     """The unit's link to the VM image, which the provider mounts by its path: the reaper's mark."""
     image = _ready(domain, eid)
+    _snaps(eid)
     _workspace(dir)
     vm = os.path.join(dir, "vm", os.path.basename(VM))
     os.makedirs(os.path.dirname(vm), exist_ok=True)
