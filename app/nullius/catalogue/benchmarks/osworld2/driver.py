@@ -124,14 +124,16 @@ RETRIES_SITE_READS = frozenset({"069"})
 HEAVY_WRITES = {"093": (24, 240), "108": (16, 160)}
 FREECAD = frozenset({"103", "104"})
 FREECAD_PROGRAMS = ("freecadcmd", "FreeCADCmd", "freecad", "freecad.cmd")
-SNAPS = {"093": ("openboard", "core24", "kf6-core24", "ffmpeg-2404", "mesa-2404", "lxqt-support-core24",
-                 "gtk-common-themes")}
+SNAPS = {"093": ("openboard", "kf6-core24", "lxqt-support-core24")}
 SNAP_STORE = "https://api.snapcraft.io/v2/snaps/info/{}?fields=revision,download"
-SNAP_SECONDS = 1200
 SNAP_TRIES = 3
 SNAP_PAUSE = 10
+SNAP_LISTED_SECONDS = 30
+SNAP_CONNECTION_SECONDS = 30
 SNAP_ENV = "OSWORLD2_SNAPS"
 SNAP_URL = "OSWORLD2_SNAP_URL"
+SNAP_SHA = re.compile(r"[0-9a-f]{96}")
+_FILLING = {}
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
              "010": ("email_010.tar.gz",)}
@@ -1080,72 +1082,125 @@ def _snap_cache():
     return os.path.join(UP, "cache", "snaps")
 
 
-def _snap(name, where, until):
-    """The store's latest/stable amd64 revision of a public snap, in ``where`` by its sha3-384, downloaded once and
-    kept only with the store's digest and size."""
+def _snap_store(name):
+    """The store's latest/stable amd64 revision of a public snap: its listing and its download address."""
     asked = urllib.request.Request(SNAP_STORE.format(name), headers={"Snap-Device-Series": "16"})
     with urllib.request.urlopen(asked, timeout=60) as r:
         entry = next(c for c in json.load(r)["channel-map"] if c["channel"]["architecture"] == "amd64"
                      and c["channel"]["track"] == "latest" and c["channel"]["risk"] == "stable")
     dl = entry["download"]
-    path = os.path.join(where, dl["sha3-384"])
-    if not os.path.exists(path):
-        digest, had = hashlib.sha3_384(), 0
-        if os.path.exists(path + ".part"):
-            with open(path + ".part", "rb") as f:
-                while chunk := f.read(1 << 20):
-                    digest.update(chunk)
-                    had += len(chunk)
-        asked = urllib.request.Request(dl["url"], headers={"Range": f"bytes={had}-"} if had else {})
-        with urllib.request.urlopen(asked, timeout=60) as r:
-            if had and r.status != 206:
-                digest, had = hashlib.sha3_384(), 0
-            with open(path + ".part", "ab" if had else "wb") as f:
-                while chunk := r.read(1 << 20):
-                    if time.time() > until:
-                        raise TimeoutError(f"{name} took longer than {SNAP_SECONDS} s; the next unit goes on from here")
-                    digest.update(chunk)
-                    f.write(chunk)
-        if digest.hexdigest() != dl["sha3-384"] or os.path.getsize(path + ".part") != dl["size"]:
-            os.remove(path + ".part")
-            raise ValueError(f"{name} is not the store's file")
-        os.replace(path + ".part", path)
-    return {"name": name, "revision": entry["revision"], "sha3_384": dl["sha3-384"], "size": dl["size"], "file": path}
+    if not SNAP_SHA.fullmatch(str(dl["sha3-384"])):
+        raise ValueError(f"{name}: the store gave no sha3-384")
+    return {"name": name, "revision": int(entry["revision"]), "sha3_384": dl["sha3-384"], "size": int(dl["size"])}, dl["url"]
 
 
-def _tried(name, where, until):
-    """_snap, again after a dropped connection while there is time."""
+def _snap_download(snap, url, where):
+    """The file in ``where`` by its sha3-384, kept only with the store's digest and size; a part an earlier try left is
+    gone on from."""
+    path = os.path.join(where, snap["sha3_384"])
+    part = path + ".part"
+    if os.path.exists(path):
+        return
+    had = os.path.getsize(part) if os.path.exists(part) else 0
+    if had > snap["size"]:
+        os.remove(part)
+        had = 0
+    if had < snap["size"]:
+        asked = urllib.request.Request(url, headers={"Range": f"bytes={had}-"} if had else {})
+        with urllib.request.urlopen(asked, timeout=60) as r, \
+                open(part, "ab" if had and r.status == 206 else "wb") as f:
+            shutil.copyfileobj(r, f, 1 << 20)
+        if os.path.getsize(part) < snap["size"]:
+            raise OSError(f"{snap['name']}: the download ended early")
+    digest = hashlib.sha3_384()
+    with open(part, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    if digest.hexdigest() != snap["sha3_384"] or os.path.getsize(part) != snap["size"]:
+        os.remove(part)
+        raise ValueError(f"{snap['name']} is not the store's file")
+    os.replace(part, path)
+
+
+def _snap_tried(call, *args):
     for tries in range(SNAP_TRIES, 0, -1):
         try:
-            return _snap(name, where, until)
+            return call(*args)
         except OSError:
-            if tries == 1 or time.time() + SNAP_PAUSE > until:
+            if tries == 1:
                 raise
             time.sleep(SNAP_PAUSE)
 
 
-def _snaps(eid):
-    """The task's snaps on this machine for the guest's download cache, listed in <cache>/<eid>.json; when they cannot
-    be had, the guest downloads them itself, as without the cache."""
-    if eid not in SNAPS:
-        return
+def _snap_list(eid, where, current):
+    """<cache>/<eid>.json: the store's current revisions whose file is here, and nothing else."""
+    with open(os.path.join(where, f"{eid}.json.part"), "w", encoding="utf-8") as f:
+        json.dump([s for s in current if os.path.exists(os.path.join(where, s["sha3_384"]))], f)
+    os.replace(os.path.join(where, f"{eid}.json.part"), os.path.join(where, f"{eid}.json"))
+
+
+def _snap_fill(eid, listed):
+    """In the background while this driver runs: the store's current revisions of the task's snaps, then their files.
+    Another driver filling the cache is left to it."""
     where = _snap_cache()
     try:
         os.makedirs(where, exist_ok=True)
         with open(os.path.join(where, ".lock"), "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            until = time.time() + SNAP_SECONDS
-            listed = [_tried(name, where, until) for name in SNAPS[eid]]
-            with open(os.path.join(where, f"{eid}.json.part"), "w", encoding="utf-8") as f:
-                json.dump(listed, f)
-            os.replace(os.path.join(where, f"{eid}.json.part"), os.path.join(where, f"{eid}.json"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            current = [_snap_tried(_snap_store, name) for name in SNAPS[eid]]
+            _snap_list(eid, where, [s for s, _ in current])
+            listed.set()
+            for snap, url in current:
+                _snap_tried(_snap_download, snap, url, where)
+            _snap_list(eid, where, [s for s, _ in current])
     except Exception as e:
-        print(f"task {eid}: its snaps are not cached on this machine ({type(e).__name__}: {e}); the guest downloads "
-              "them itself", file=sys.stderr, flush=True)
+        print(f"task {eid}: its snaps are not all on this machine yet ({type(e).__name__}: {e}); until they are, the "
+              "guest downloads them itself", file=sys.stderr, flush=True)
+    finally:
+        listed.set()
+        _FILLING.pop(eid, None)
+
+
+def _snaps(eid):
+    """The task's snaps brought to this machine in the background, once a driver; a unit waits for none of it."""
+    if eid in SNAPS and eid not in _FILLING:
+        _FILLING[eid] = threading.Event()
+        threading.Thread(target=_snap_fill, args=(eid, _FILLING[eid]), daemon=True).start()
+
+
+class _SnapServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, handler):
+        self.open = set()
+        super().__init__(address, handler)
+
+    def process_request(self, request, client_address):
+        self.open.add(request)
+        super().process_request(request, client_address)
+
+    def shutdown_request(self, request):
+        self.open.discard(request)
+        super().shutdown_request(request)
+
+    def handle_error(self, request, client_address):
+        pass
+
+    def close(self):
+        self.shutdown()
+        self.server_close()
+        for request in list(self.open):
+            with contextlib.suppress(OSError):
+                request.shutdown(socket.SHUT_RDWR)
 
 
 def _snap_handler(files):
     class Handler(http.server.BaseHTTPRequestHandler):
+        timeout = SNAP_CONNECTION_SECONDS
+
         def do_GET(self):
             path = files.get(self.path.lstrip("/"))
             if path is None or not os.path.isfile(path):
@@ -1164,28 +1219,38 @@ def _snap_handler(files):
 
 
 @contextlib.contextmanager
-def _snap_served(eid):
-    """For the unit's life, the listed snaps by their sha3-384 alone, on the VMs' gateway at a free port; none, when
-    there is no list or no such address."""
-    listed = os.path.join(_snap_cache(), f"{eid}.json")
-    if eid not in SNAPS or not os.path.exists(listed):
+def _snap_served(eid, dir):
+    """For the unit's life, the cache's files of the store's current revisions, by their sha3-384 alone, on the VMs'
+    gateway at a free port, listed for the guest in <dir>/snaps.json; none, when there are none or no such address.
+    Every connection is closed with the unit."""
+    listing = _FILLING.get(eid)
+    if listing is not None:
+        listing.wait(SNAP_LISTED_SECONDS)
+    try:
+        with open(os.path.join(_snap_cache(), f"{eid}.json"), encoding="utf-8") as f:
+            snaps = [{k: s[k] for k in ("name", "revision", "sha3_384", "size")} for s in json.load(f)
+                     if SNAP_SHA.fullmatch(str(s.get("sha3_384")))] if eid in SNAPS else []
+    except (OSError, ValueError, KeyError, TypeError):
+        snaps = []
+    if not snaps:
         yield {}
         return
     try:
-        with open(listed, encoding="utf-8") as f:
-            files = {s["sha3_384"]: s["file"] for s in json.load(f)}
-        server = http.server.ThreadingHTTPServer((_startup().GATEWAY, 0), _snap_handler(files))
-    except Exception as e:
+        server = _SnapServer((_startup().GATEWAY, 0), _snap_handler(
+            {s["sha3_384"]: os.path.join(_snap_cache(), s["sha3_384"]) for s in snaps}))
+    except OSError as e:
         print(f"task {eid}: its snaps are not served to the guest ({type(e).__name__}); the guest downloads them "
               "itself", file=sys.stderr, flush=True)
         yield {}
         return
+    listed = os.path.join(dir, "snaps.json")
+    with open(listed, "w", encoding="utf-8") as f:
+        json.dump(snaps, f)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield {SNAP_ENV: listed, SNAP_URL: f"http://{_startup().GATEWAY}:{server.server_address[1]}"}
     finally:
-        server.shutdown()
-        server.server_close()
+        server.close()
 
 
 def _vm(dir, domain, eid):
@@ -1282,7 +1347,7 @@ def _services(held, dir, domain, eid, until=None):
     ports = held.enter_context(_published(eid, closed))
     held.enter_context(websites.held(eid, websites.needed(eid), closed))
     held.enter_context(_gitlab(eid, dir, closed))
-    snaps = held.enter_context(_snap_served(eid))
+    snaps = held.enter_context(_snap_served(eid, dir))
     return dict(ports, **snaps, **held.enter_context(proxy.held(dir, _task(dir, domain, eid)["proxy"], _disk)))
 
 

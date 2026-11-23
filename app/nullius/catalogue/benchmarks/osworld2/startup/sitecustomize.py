@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -57,7 +58,8 @@ HIDDEN = "<proxy password>"
 SNAPS = "OSWORLD2_SNAPS"
 SNAP_URL = "OSWORLD2_SNAP_URL"
 SNAP_CACHE = "/var/lib/snapd/cache"
-SNAP_SECONDS = 900
+SNAP_SECONDS = 300
+SNAP_CHECK_SECONDS = 30
 
 
 class WriteLimitError(RuntimeError):
@@ -333,57 +335,60 @@ def floor_desktop_env(module):
     cls.__init__ = wrapped
 
 
-def _guest(controller, command, seconds=60):
+def _guest(controller, command, seconds):
     import requests
     said = requests.post(controller.http_server + "/setup/execute",
                          json={"command": command, "shell": True, "timeout": seconds}, timeout=seconds + 30)
     return said.status_code == 200 and str(said.json().get("returncode", 1)) == "0"
 
 
-def _root(controller, command, seconds=60):
-    return _guest(controller, f"echo '{controller.client_password}' | sudo -S sh -c '{command}'", seconds)
+def _root(controller, command, seconds):
+    return _guest(controller, f"printf '%s\\n' {shlex.quote(controller.client_password)} | sudo -S sh -c "
+                              f"{shlex.quote(command)}", seconds)
 
 
-def _fetch(snap, url):
-    """The guest's own download of one snap from the driver into snapd's cache, kept only with the store's sha3-384
-    and size."""
-    sha, part = snap["sha3_384"], f"{SNAP_CACHE}/{snap['sha3_384']}.part"
-    return (f"mkdir -p {SNAP_CACHE} && (curl -fsS --max-time {SNAP_SECONDS} -o {part} {url}/{sha} || "
-            f"wget -q -T {SNAP_SECONDS} -O {part} {url}/{sha}) && test \"$(stat -c %s {part})\" = {snap['size']} && "
+def _fetch(snap, url, seconds, cache=SNAP_CACHE):
+    """The guest's own download of one snap from the driver into snapd's cache within ``seconds``, kept only with the
+    store's sha3-384 and size."""
+    sha, part = snap["sha3_384"], f"{cache}/{snap['sha3_384']}.part"
+    return (f"mkdir -p {cache} && timeout -k 5 {seconds} wget -q --tries=1 --connect-timeout=5 -O {part} {url}/{sha} "
+            f"&& test \"$(stat -c %s {part})\" = {int(snap['size'])} && "
             f"test \"$(openssl dgst -sha3-384 -r {part} | cut -d\" \" -f1)\" = {sha} && "
-            f"mv {part} {SNAP_CACHE}/{sha} && chmod 0644 {SNAP_CACHE}/{sha} || {{ rm -f {part}; exit 1; }}")
+            f"mv {part} {cache}/{sha} && chmod 0644 {cache}/{sha} || {{ rm -f {part}; exit 1; }}")
 
 
 def _seeded(controller, use_proxy, environ=os.environ):
-    """Each listed snap the guest lacks, fetched by the guest into snapd's download cache before the task's setup:
-    snapd links a file there for the revision the store names and downloads the snap itself otherwise."""
-    log = logging.getLogger("nullius.osworld2")
+    """Each listed snap the guest lacks, fetched by the guest into snapd's download cache before the task's setup,
+    within SNAP_SECONDS for all; the first that fails ends the rest. snapd links a file there for the revision the
+    store names and downloads the snap itself otherwise."""
+    log, placed = logging.getLogger("nullius.osworld2"), []
     try:
         with open(environ[SNAPS], encoding="utf-8") as f:
             listed = json.load(f)
+        until = time.time() + SNAP_SECONDS
         if not controller.ensure_ready(use_proxy):
-            return []
-        placed = []
+            return placed
         for snap in listed:
-            if _guest(controller, f"snap list {snap['name']}"):
+            if _guest(controller, f"snap list {shlex.quote(snap['name'])}", SNAP_CHECK_SECONDS):
                 continue
-            if _root(controller, _fetch(snap, environ[SNAP_URL]), SNAP_SECONDS + 120):
-                placed.append(snap)
-            else:
+            left = int(until - time.time())
+            if left < SNAP_CHECK_SECONDS or not _root(controller, _fetch(snap, environ[SNAP_URL], left), left + 10):
                 log.info("snap cache %s: not delivered", snap["name"])
-        return placed
+                break
+            placed.append(snap)
     except Exception as e:
         log.warning("snap cache not used: %s", type(e).__name__)
-        return []
+    return placed
 
 
 def _hits(controller, placed):
     """Hit: snapd's installed file is the cached one (one inode); miss: snapd downloaded its own."""
     for snap in placed:
         cached = f"{SNAP_CACHE}/{snap['sha3_384']}"
-        used = f"/var/lib/snapd/snaps/{snap['name']}_{snap['revision']}.snap"
+        used = f"/var/lib/snapd/snaps/{snap['name']}_{int(snap['revision'])}.snap"
         try:
-            hit = _root(controller, f'test -e {cached} && test -e {used} && test "$(stat -c %i {cached})" = "$(stat -c %i {used})"')
+            hit = _root(controller, f'test -e {cached} && test -e {used} && '
+                                    f'test "$(stat -c %i {cached})" = "$(stat -c %i {used})"', SNAP_CHECK_SECONDS)
         except Exception:
             hit = False
         logging.getLogger("nullius.osworld2").info("snap cache %s: %s", snap["name"], "hit" if hit else "miss")
@@ -400,10 +405,9 @@ def seed_snaps(module):
     def wrapped(self, *args, **kwargs):
         use_proxy = args[1] if len(args) > 1 else kwargs.get("use_proxy", False)
         placed = _seeded(self.setup_controller, use_proxy) if os.environ.get(SNAPS) and os.environ.get(SNAP_URL) else []
-        try:
-            return setup(self, *args, **kwargs)
-        finally:
-            _hits(self.setup_controller, placed)
+        done = setup(self, *args, **kwargs)
+        _hits(self.setup_controller, placed)
+        return done
 
     setattr(wrapped, MARK, True)
     cls._setup_task = wrapped
