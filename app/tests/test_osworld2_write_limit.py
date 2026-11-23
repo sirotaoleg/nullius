@@ -584,12 +584,19 @@ class HeavyWrites(unittest.TestCase):
                                judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
         self.assertEqual(self.started, [])
 
+    def test_108_is_refused_below_16_mbps_or_160_iops(self):
+        for mbps, iops in (("8", "80"), ("16", "80"), ("8", "none")):
+            with self.assertRaisesRegex(self.driver.EnvironmentSetupError,
+                                        "task 108 writes the most to its VM's disk.*16 MB/s or 160 IOPS"):
+                self.score("108", mbps, iops)
+        self.assertEqual(self.started, [])
+
     def test_enough_or_no_limit_or_another_task_or_provider_starts(self):
         for case in (("093", "24", "240"), ("093", "none", "none"), ("093", "32", "none"), ("108", "16", "160"),
-                     ("045", "6", "60"), ("093", "6", "60", "aws")):
+                     ("108", "none", "160"), ("045", "6", "60"), ("093", "6", "60", "aws")):
             with self.assertRaises(Started):
                 self.score(*case)
-        self.assertEqual(len(self.started), 6)
+        self.assertEqual(len(self.started), 7)
 
 
 class Snapshot(unittest.TestCase):

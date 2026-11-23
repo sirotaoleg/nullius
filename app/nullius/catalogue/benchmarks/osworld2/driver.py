@@ -111,8 +111,7 @@ LISTS["websites98"] = sorted(LISTS["no_services63"] + LISTS["websites35"])
 JUDGED = frozenset("003 007 008 019 025 031 035 041 070 074 075 077 078 079 081 082 087 089 090 092 093".split())
 ASKS_USER = frozenset("007 024 026 034 095 098".split())
 RETRIES_SITE_READS = frozenset({"069"})
-HEAVY_WRITES = frozenset({"093"})
-HEAVY_FLOOR = (24, 240)
+HEAVY_WRITES = {"093": (24, 240), "108": (16, 160)}
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
              "010": ("email_010.tar.gz",)}
@@ -905,10 +904,11 @@ def _ready(domain, eid):
     """What a VM start of the task needs, checked before one, so it does not fail minutes later; no /dev/kvm is a warning."""
     image = vm_image()
     _task_file(domain, eid)
-    if eid in HEAVY_WRITES and os.environ.get("NULLIUS_OPTION_VM_PROVIDER", "docker") == "docker" and any(
-            v.isdigit() and int(v) < low for v, low in zip((os.environ.get(n, "none") for n in WRITE_OPTIONS), HEAVY_FLOOR)):
-        raise RuntimeError(f"task {eid} writes the most to its VM's disk, and below a write limit of {HEAVY_FLOOR[0]} MB/s "
-                           f"or {HEAVY_FLOOR[1]} IOPS its setup can overrun the upstream's time limit: give it at least those, or none")
+    floor = HEAVY_WRITES.get(eid)
+    if floor and os.environ.get("NULLIUS_OPTION_VM_PROVIDER", "docker") == "docker" and any(
+            v.isdigit() and int(v) < low for v, low in zip((os.environ.get(n, "none") for n in WRITE_OPTIONS), floor)):
+        raise RuntimeError(f"task {eid} writes the most to its VM's disk, and below a write limit of {floor[0]} MB/s "
+                           f"or {floor[1]} IOPS its setup can overrun the upstream's time limit: give it at least those, or none")
     sites = websites.needed(eid)
     lab = gitlab_server.needed(eid)
     _startup().network(_asked)
