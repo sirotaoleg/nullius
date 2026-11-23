@@ -37,7 +37,7 @@
 
 .rp .oc-resolved { --oc: var(--resolved); } .rp .oc-patch_failed_tests { --oc: var(--patch_failed_tests); }
 .rp .oc-failed_verification { --oc: var(--failed_verification); } .rp .oc-patch_not_applied { --oc: var(--patch_not_applied); }
-.rp .oc-no_patch { --oc: var(--no_patch); } .rp .oc-no_port { --oc: var(--no_port); } .rp .oc-agent_error { --oc: var(--agent_error); }
+.rp .oc-no_patch { --oc: var(--no_patch); } .rp .oc-no_port { --oc: var(--no_port); } .rp .oc-unsupported { --oc: var(--unsupported); } .rp .oc-agent_error { --oc: var(--agent_error); }
 .rp .oc-rate_limited { --oc: var(--rate_limited); } .rp .oc-api_error { --oc: var(--api_error); }
 .rp .oc-setup_error { --oc: var(--setup_error); } .rp .oc-unknown { --oc: var(--unknown-mark); }
 .rp .oc-spending_cap { --oc: var(--spending_cap); } .rp .oc-scored { --oc: var(--scored); } .rp .oc-cancelled { --oc: var(--cancelled); }

@@ -83,7 +83,7 @@ def ran(trials) -> tuple:
 def has_verdict(trials) -> bool:
     """Whether an attempt that ran was passed or failed, so a pass count over
     them means something."""
-    return any(t.outcome not in NO_VERDICT and not (t.outcome == classify.NO_PORT and t.reward is None) for t in ran(trials))
+    return any(t.outcome not in NO_VERDICT and not (t.outcome in classify.NOT_RUN and t.reward is None) for t in ran(trials))
 
 
 @dataclass(frozen=True)

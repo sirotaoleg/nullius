@@ -69,6 +69,7 @@ COMPATIBLE = {
     # from a transcript, so nothing agrees or disagrees with it and no cause suggests it.
     classify.SPENDING_CAP: (),
     classify.NO_PORT: (),
+    classify.UNSUPPORTED: (),
     classify.CANCELLED: (),       # the run recorded its stop; never inferred from a transcript
     # No claim made: not comparable. The judge's pick becomes a suggestion.
     classify.UNKNOWN: (),

@@ -48,11 +48,11 @@ class NoPort(unittest.TestCase):
             setattr(self, name, patch.start())
             self.addCleanup(patch.stop)
 
-    def go(self, other, kind="score", reward=0.5, **kw):
+    def go(self, other, kind="score", reward=0.5, needs=("agent.task/v1",), **kw):
         here = tempfile.mkdtemp(dir=self.tmp)
         with open(os.path.join(here, "driver.py"), "w") as f:
             f.write(DRIVER.replace("REWARD", repr(reward)))
-        b = dict(BENCH, _here=here, _kind="benchmark", score={"kind": kind, "says": "the answer"})
+        b = dict(BENCH, _here=here, _kind="benchmark", score={"kind": kind, "says": "the answer"}, needs=list(needs))
         job = run.run(b, other, model="m-1", provider="custom", jobs_root=tempfile.mkdtemp(dir=self.tmp), concurrency=1,
                       env={"MODEL_API_URL": "http://127.0.0.1:9/v1"}, say=lambda s: None, unsandboxed=True, **kw)
         trials = {}
@@ -107,11 +107,25 @@ class NoPort(unittest.TestCase):
         self.assertEqual((hat["units"], hat["1"]), (2, 0.5))
         self.assertEqual(attempts.for_job(parse.parse_job(job))["hat"][1], 0.5)
 
-    def test_an_agent_with_the_port_and_the_null_control_run_it_as_before(self):
+    def test_an_agent_with_the_port_scores_0_where_the_benchmark_does_not_carry_it(self):
+        job, trials = self.go(self.agent_def(proven=True))
+        b = trials["b__u0001"]
+        self.assertEqual(b["exception_info"]["exception_type"], jobs.UNSUPPORTED)
+        self.assertEqual(b["exception_info"]["exception_message"], f"not run: Nullius does not carry {CONVERSATION} on Fixture")
+        self.assertEqual(b["verifier_result"]["rewards"], {"score": 0.0})
+        self.assertEqual(sorted(f for f in os.listdir(job) if f.startswith("setup-")), ["setup-a"])
+        self.assertFalse(os.path.exists(os.path.join(job, "b__u0001", "agent", "trajectory.json")))
+        with open(os.path.join(job, "result.json")) as f:
+            self.assertEqual(json.load(f)["stats"]["n_errored_trials"], 0)
+        j = parse.parse_job(job)
+        self.assertEqual(({t.task_base: t.outcome for t in j.trials}["b"], j.n_infra, j.mean_score), (classify.UNSUPPORTED, 0, 0.25))
+        self.assertEqual(attempts.Attempts(tuple(t for t in j.trials if t.task_base == "b")).has_verdicts, False)
+
+    def test_where_the_benchmark_carries_the_port_and_for_the_null_control_it_runs_as_before(self):
         control = definitions.control(BENCH, "nop")
-        for other in (self.agent_def(proven=True), control):
+        for other, needs in ((self.agent_def(proven=True), ("agent.task/v1", CONVERSATION)), (control, ("agent.task/v1",))):
             with self.subTest(other=other["key"]):
-                job, trials = self.go(other)
+                job, trials = self.go(other, needs=needs)
                 self.assertFalse(any(t.get("exception_info") for t in trials.values()))
                 self.assertEqual(sorted(f for f in os.listdir(job) if f.startswith("setup-")),
                                  ["setup-a", "setup-b"])
@@ -121,6 +135,9 @@ class NoPort(unittest.TestCase):
         self.assertEqual(jobs.feed_outcome("pass", {"reward": 0.0}, (jobs.NO_PORT, "not run"))["outcome"], "unresolved")
         self.assertEqual(classify.from_verdict(jobs.NO_PORT, None), classify.NO_PORT)
         self.assertNotIn(classify.NO_PORT, classify.INFRA_OUTCOMES)
+        self.assertEqual(jobs.feed_outcome("score", {"reward": 0.0}, (jobs.UNSUPPORTED, "not run"))["outcome"], "scored")
+        self.assertEqual(classify.from_verdict(jobs.UNSUPPORTED, None), classify.UNSUPPORTED)
+        self.assertNotIn(classify.UNSUPPORTED, classify.INFRA_OUTCOMES)
 
 
 class OSWorld2Units(unittest.TestCase):
@@ -139,7 +156,18 @@ class OSWorld2Units(unittest.TestCase):
         with open(meta, "w") as f:
             json.dump({"tasks": "001 007 024 026 034 069 095 098 108".split()}, f)
         with mock.patch.dict(os.environ, {"NULLIUS_DATASET": meta}):
-            self.assertEqual(sorted(driver.units()["needs"]), [f"tasks__{e}" for e in "007 024 026 034 069 095 098".split()])
+            listed = driver.units()
+        self.assertEqual(sorted(listed["needs"]), [f"tasks__{e}" for e in "007 024 026 034 069 095 098".split()])
+        osw2 = definitions.get("benchmark", "osworld2", root=definitions.CATALOGUE)
+        for key, outcome in (("codex", jobs.UNSUPPORTED), ("computer-only", jobs.NO_PORT)):
+            r = object.__new__(run.Run)
+            r.bench, r.unit_needs = osw2, listed["needs"]
+            r.other = definitions.get("agent", key, root=definitions.CATALOGUE) if key == "codex" else dict(
+                definitions.get("agent", "codex", root=definitions.CATALOGUE), label="Computer only",
+                offers=["agent.computer/v1"], proven={"agent.computer/v1": {}})
+            with self.subTest(agent=key):
+                self.assertEqual(r.no_port("tasks__024")[0], outcome)
+                self.assertIsNone(r.no_port("tasks__001"))
 
 
 if __name__ == "__main__":

@@ -268,7 +268,7 @@ class Presentation(unittest.TestCase):
     def test_every_outcome_is_ordered(self):
         """ORDER drives sorting; an outcome missing from it raises on compare."""
         produced = {C.RESOLVED, C.SCORED, C.PATCH_FAILED_TESTS, C.FAILED_VERIFICATION,
-                    C.PATCH_NOT_APPLIED, C.NO_PATCH, C.NO_PORT, C.AGENT_ERROR,
+                    C.PATCH_NOT_APPLIED, C.NO_PATCH, C.NO_PORT, C.UNSUPPORTED, C.AGENT_ERROR,
                     C.RATE_LIMITED, C.API_ERROR, C.SETUP_ERROR, C.SPENDING_CAP, C.CANCELLED, C.UNKNOWN}
         self.assertEqual(produced, set(C.ORDER))
 

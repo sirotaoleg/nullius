@@ -31,6 +31,8 @@ SPENDING_CAP = "spending_cap"
 CANCELLED = "cancelled"
 AGENT_ERROR = "agent_error"
 NO_PORT = "no_port"
+UNSUPPORTED = "unsupported"
+NOT_RUN = {NO_PORT, UNSUPPORTED}
 UNKNOWN = "unknown"
 
 # Outcomes excluded from the adjusted rate: infrastructure failures or
@@ -45,6 +47,7 @@ ORDER = [
     PATCH_NOT_APPLIED,
     NO_PATCH,
     NO_PORT,
+    UNSUPPORTED,
     AGENT_ERROR,
     RATE_LIMITED,
     API_ERROR,
@@ -104,6 +107,7 @@ LABELS = {
     PATCH_NOT_APPLIED: "Patch did not apply",
     NO_PATCH: "No patch produced",
     NO_PORT: "Missing port",
+    UNSUPPORTED: "Unsupported in Nullius",
     AGENT_ERROR: "Agent error",
     RATE_LIMITED: "Rate limited",
     API_ERROR: "API error",
@@ -141,6 +145,10 @@ DESCRIPTIONS = {
     NO_PORT: (
         "The task needs a port the agent has not proven, such as a conversation with a "
         "simulated user, so it was not run. Scored 0 and counted against the agent."
+    ),
+    UNSUPPORTED: (
+        "The task needs a port Nullius does not carry on this benchmark, such as a "
+        "conversation through the computer port. Scored 0, neither the agent's error nor the environment's."
     ),
     AGENT_ERROR: (
         "The agent itself failed — it timed out, filled its context, truncated its "
@@ -197,6 +205,8 @@ def from_verdict(exception_type, verdict):
             return CANCELLED
         if et == "noporterror":
             return NO_PORT
+        if et == "unsupportederror":
+            return UNSUPPORTED
         if et == _CAP_EXCEPTION:
             return SPENDING_CAP
         # Rate limiting first: it is an Api* class too, but common enough to be

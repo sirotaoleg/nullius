@@ -621,10 +621,12 @@ def write_config(job_dir: str, *, job: str, bench: dict, other: dict, model: str
 _INFRA = ("Setup", "Verifier", "Api", "RateLimit", "Environment", "Docker", "Build", "Connection", "Network", "Authentication",
           "ModelNotFound")
 NO_PORT = "NoPortError"
+UNSUPPORTED = "UnsupportedError"
+NOT_RUN = (NO_PORT, UNSUPPORTED)
 
 
 def errored(r: dict) -> bool:
-    return bool(r.get("exception_info")) and r["exception_info"].get("exception_type") != NO_PORT
+    return bool(r.get("exception_info")) and r["exception_info"].get("exception_type") not in NOT_RUN
 
 
 FEED_PHASES = (("env_setup", "environment_setup"), ("agent_setup", "agent_setup"), ("agent_run", "agent_execution"), ("verify", "verifier"))
@@ -648,7 +650,7 @@ def feed_outcome(kind: str, score: Optional[dict], exception: Optional[tuple]) -
     kind as evidence. A unit the run's spending cap cut off (``ledger.ERROR``)
     is the feed's ``budget``."""
     score = score or {}
-    if exception and exception[0] != NO_PORT:
+    if exception and exception[0] not in NOT_RUN:
         k = exception[0]
         return {"outcome": "cancelled" if k == "CancelledError" else "budget" if k == ledger.ERROR else "timeout" if "Timeout" in k else "infra_error" if any(w in k for w in _INFRA) else "agent_error",
                 "exc": k, "evidence": (exception[1] or k)[:200]}

@@ -64,7 +64,7 @@
 .la-mix span { height: 100%; background: var(--c, var(--text-faint)); }
 .la-mix .oc-resolved { background: var(--resolved); } .la-mix .oc-patch_failed_tests { background: var(--patch_failed_tests); }
 .la-mix .oc-failed_verification { background: var(--failed_verification); } .la-mix .oc-patch_not_applied { background: var(--patch_not_applied); }
-.la-mix .oc-no_patch { background: var(--no_patch); } .la-mix .oc-no_port { background: var(--no_port); } .la-mix .oc-agent_error { background: var(--agent_error); }
+.la-mix .oc-no_patch { background: var(--no_patch); } .la-mix .oc-no_port { background: var(--no_port); } .la-mix .oc-unsupported { background: var(--unsupported); } .la-mix .oc-agent_error { background: var(--agent_error); }
 .la-mix .oc-rate_limited { background: var(--rate_limited); } .la-mix .oc-api_error { background: var(--api_error); }
 .la-mix .oc-setup_error { background: var(--setup_error); } .la-mix .oc-unknown { background: var(--unknown); }
 .la-mix .oc-spending_cap { background: var(--spending_cap); }

@@ -1349,12 +1349,17 @@ class Run:
                         d.close()
                         self.local.driver = None
 
-    def no_port(self, unit: str) -> str:
+    def no_port(self, unit: str) -> Optional[tuple]:
         needs = (getattr(self, "unit_needs", None) or {}).get(unit)
-        if self.other.get("_kind") != "agent" or not isinstance(needs, list) or not needs:
-            return ""
+        if self.other.get("_kind") != "agent" or "driver" in self.other["start"] or not isinstance(needs, list) or not needs:
+            return None
         lacks = [str(p) for p in needs if match.fit(dict(self.bench, needs=[str(p)], needs_skills={}), self.other)]
-        return f"not run: needs {', '.join(lacks)}, which {self.other['label']} has not proven" if lacks else ""
+        if lacks:
+            return job.NO_PORT, f"not run: needs {', '.join(lacks)}, which {self.other['label']} has not proven"
+        uncarried = [str(p) for p in needs if p not in self.bench["needs"]]
+        if uncarried:
+            return job.UNSUPPORTED, f"not run: Nullius does not carry {', '.join(uncarried)} on {self.bench['label']}"
+        return None
 
     def _unit(self, i: int, unit: str, r: int = 1, retry: int = 0) -> Optional[dict]:
         if self._stopped.is_set() or (getattr(self, "_halt", None) is not None and self._halt.is_set()):
@@ -1390,10 +1395,10 @@ class Run:
         image, finished = None, False            # its own image; whether it ended, or was broken off (a Stop)
         retry_ok = True                          # whether its failure is one a further try may mend
         try:
-            missing = self.no_port(unit)
-            if missing:
-                score = {"reward": 0.0, "detail": missing}
-                raise _Ended(job.NO_PORT, missing, retryable=False)
+            unrun = self.no_port(unit)
+            if unrun:
+                score = {"reward": 0.0, "detail": unrun[1]}
+                raise _Ended(*unrun, retryable=False)
             try:
                 # a setup's unit needs none: the upstream's answerer reads its data itself. The unit is set up
                 # once its request is written: a stop before that leaves the driver nothing to end
@@ -1535,7 +1540,7 @@ class Run:
             # the Stop ended its agent, its relay or its containers under it: what it then failed with is
             # the Stop's doing, not the agent's nor the environment's (Harbor's name for a stopped trial)
             exc = (CANCELLED, "the run was stopped before this unit ended" + (f"; it then failed with {exc[0]}" if exc else ""))
-        if traj is None and self.other["_kind"] == "agent" and not (exc and exc[0] == job.NO_PORT):
+        if traj is None and self.other["_kind"] == "agent" and not (exc and exc[0] in job.NOT_RUN):
             traj = job.trajectory_from_events([], calls, self.other, self.model, f"{self.name}/{unit}")
         if traj is not None and setup.get("mcp"):    # how a reader tells the benchmark's tools in any agent's spelling
             traj["extra"] = dict(traj.get("extra") or {}, mcp_servers=[str(m.get("name")) for m in setup["mcp"] if m.get("name")])
@@ -1550,7 +1555,7 @@ class Run:
                                                     if rl is not None else []),
                               image=(box.image if box is not None else getattr(rl, "unit_image", "")) or "")
         install.prune(self.other, home)          # its declared caches: the trial is written, no one reads them now
-        verdict = "error " + exc[0] if exc and exc[0] != job.NO_PORT else ("no port, " if exc else "") + f"reward {score.get('reward')}"
+        verdict = "error " + exc[0] if exc and exc[0] not in job.NOT_RUN else (exc[0] + ", " if exc else "") + f"reward {score.get('reward')}"
         self.say(f"  {unit}: {verdict}")
         self.said_unit(unit, score, exc, retry)
         if self.feed is not None:
@@ -1652,7 +1657,7 @@ class Run:
         if retry:
             self.progress.emit("unit", "retried", unit=unit)
         score = score or {}
-        if exc and exc[0] != job.NO_PORT:
+        if exc and exc[0] not in job.NOT_RUN:
             how = {"outcome": "error", "error": exc[0]}
         elif self.bench["score"]["kind"] == "pass":
             how = {"outcome": "passed" if score.get("reward") == 1.0 else "failed", "reward": score.get("reward")}

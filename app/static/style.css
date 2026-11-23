@@ -35,6 +35,7 @@
   --patch_not_applied: #d97438;
   --no_patch: #a894ff;
   --no_port: #b8a8e0;
+  --unsupported: #e05080;
   --agent_error: #f26a62;
   --rate_limited: #7d8595;
   --api_error: #4aa8ee;           /* 35.8 from its nearest, rate_limited */
@@ -117,6 +118,7 @@
   --patch_not_applied: #c2500d;
   --no_patch: #6d45d9;
   --no_port: #8a78b8;
+  --unsupported: #d05878;
   --agent_error: #c62f26;
   --rate_limited: #626b7a;
   --api_error: #125db2;           /* 43.5 from its nearest, rate_limited */
@@ -1053,6 +1055,7 @@ tr.control-row td { color: var(--text-dim); }
 .oc-patch_not_applied::before, .seg.oc-patch_not_applied, .tag.oc-patch_not_applied::before { background: var(--patch_not_applied); }
 .oc-no_patch::before, .seg.oc-no_patch, .tag.oc-no_patch::before { background: var(--no_patch); }
 .oc-no_port::before, .seg.oc-no_port, .tag.oc-no_port::before { background: var(--no_port); }
+.oc-unsupported::before, .seg.oc-unsupported, .tag.oc-unsupported::before { background: var(--unsupported); }
 .oc-agent_error::before, .seg.oc-agent_error, .tag.oc-agent_error::before { background: var(--agent_error); }
 .oc-rate_limited::before, .seg.oc-rate_limited, .tag.oc-rate_limited::before { background: var(--rate_limited); }
 .oc-api_error::before, .seg.oc-api_error, .tag.oc-api_error::before { background: var(--api_error); }
@@ -1111,6 +1114,7 @@ tr.control-row td { color: var(--text-dim); }
 .tag.oc-patch_not_applied { --outcome-color: var(--patch_not_applied); }
 .tag.oc-no_patch { --outcome-color: var(--no_patch); }
 .tag.oc-no_port { --outcome-color: var(--no_port); }
+.tag.oc-unsupported { --outcome-color: var(--unsupported); }
 .tag.oc-agent_error { --outcome-color: var(--agent_error); }
 .tag.oc-rate_limited { --outcome-color: var(--rate_limited); }
 .tag.oc-api_error { --outcome-color: var(--api_error); }
@@ -1118,14 +1122,14 @@ tr.control-row td { color: var(--text-dim); }
 .tag.oc-spending_cap { --outcome-color: var(--spending_cap); }
 .tag.oc-cancelled { --outcome-color: var(--cancelled); }
 .tag.oc-unknown { --outcome-color: var(--unknown); }
-.tag:is(.oc-resolved, .oc-scored, .oc-patch_failed_tests, .oc-failed_verification, .oc-patch_not_applied, .oc-no_patch, .oc-no_port, .oc-agent_error, .oc-rate_limited, .oc-api_error, .oc-setup_error, .oc-spending_cap, .oc-cancelled, .oc-unknown) {
+.tag:is(.oc-resolved, .oc-scored, .oc-patch_failed_tests, .oc-failed_verification, .oc-patch_not_applied, .oc-no_patch, .oc-no_port, .oc-unsupported, .oc-agent_error, .oc-rate_limited, .oc-api_error, .oc-setup_error, .oc-spending_cap, .oc-cancelled, .oc-unknown) {
   color: color-mix(in srgb, var(--outcome-color) 75%, var(--text));
   background: color-mix(in srgb, var(--outcome-color) 16%, var(--surface));
   border-color: color-mix(in srgb, var(--outcome-color) 42%, var(--border));
   font-family: var(--sans); font-size: 12px; font-weight: 500; line-height: 1.45;
   padding: .22rem .55rem; border-radius: 5px;
 }
-.tag:is(.oc-resolved, .oc-scored, .oc-patch_failed_tests, .oc-failed_verification, .oc-patch_not_applied, .oc-no_patch, .oc-no_port, .oc-agent_error, .oc-rate_limited, .oc-api_error, .oc-setup_error, .oc-spending_cap, .oc-cancelled, .oc-unknown)::before { width: 7px; height: 7px; flex: none; }
+.tag:is(.oc-resolved, .oc-scored, .oc-patch_failed_tests, .oc-failed_verification, .oc-patch_not_applied, .oc-no_patch, .oc-no_port, .oc-unsupported, .oc-agent_error, .oc-rate_limited, .oc-api_error, .oc-setup_error, .oc-spending_cap, .oc-cancelled, .oc-unknown)::before { width: 7px; height: 7px; flex: none; }
 .tag.oc-unknown { color: var(--text-dim); }
 .tag.oc-unknown::before { background: var(--text-dim); }
 
