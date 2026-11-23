@@ -908,7 +908,7 @@ def _ready(domain, eid):
     if eid in HEAVY_WRITES and os.environ.get("NULLIUS_OPTION_VM_PROVIDER", "docker") == "docker" and any(
             v.isdigit() and int(v) < low for v, low in zip((os.environ.get(n, "none") for n in WRITE_OPTIONS), HEAVY_FLOOR)):
         raise RuntimeError(f"task {eid} writes the most to its VM's disk, and below a write limit of {HEAVY_FLOOR[0]} MB/s "
-                           f"or {HEAVY_FLOOR[1]} IOPS its setup can outrun the upstream's time: give it at least those, or none")
+                           f"or {HEAVY_FLOOR[1]} IOPS its setup can overrun the upstream's time limit: give it at least those, or none")
     sites = websites.needed(eid)
     lab = gitlab_server.needed(eid)
     _startup().network(_asked)

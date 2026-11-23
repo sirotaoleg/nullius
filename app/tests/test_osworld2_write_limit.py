@@ -577,7 +577,8 @@ class HeavyWrites(unittest.TestCase):
         for mbps, iops in (("6", "60"), ("16", "160"), ("24", "160"), ("16", "none")):
             with self.assertRaisesRegex(self.driver.EnvironmentSetupError, refused):
                 self.score("093", mbps, iops)
-        with mock.patch.dict(os.environ, {"NULLIUS_OPTION_WRITE_MBPS": "6", "NULLIUS_OPTION_WRITE_IOPS": "60"}), \
+        with mock.patch.dict(os.environ, {"NULLIUS_OPTION_WRITE_MBPS": "6", "NULLIUS_OPTION_WRITE_IOPS": "60",
+                                          "NULLIUS_OPTION_VM_PROVIDER": "docker", "NULLIUS_OPTION_AGENT": "m3"}), \
                 self.assertRaisesRegex(self.driver.EnvironmentSetupError, refused):
             self.driver.answer("tasks__093", self.unit, "original", "MiniMax-M3", "http://127.0.0.1:9/u1/v1", "k",
                                judge={"model": "judge", "base_url": "http://127.0.0.1:9/v1", "key": "k"})
