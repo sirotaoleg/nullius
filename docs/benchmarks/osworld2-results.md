@@ -30,6 +30,7 @@ The LLM grader (21 tasks) and the simulated user (6 tasks) are Claude Sonnet 4.6
 | `grader_refused` | the grader refused an image that was not whole, of another type or over 5 MB, and the upstream's score was kept; the image can be the task's own | where the null control or several tasks carry it, read those tasks before counting their zeros against the agent |
 | unscored, the LLM grader failed or its endpoint answered an error | an infrastructure error, outside the agent's rate | check that the provider serves Claude Sonnet 4.6, then run the unit again |
 | unscored, an evaluation that gave up on the VM or a mock website | the upstream scored it without that read; its message gives that score | run the unit again |
+| an environment error: the evaluation said a dependency of its own failed (`EvaluationInfrastructureError`) | the task's scorer could not run on this machine, apart from the agent's work | install what the scorer needs, then run the unit again |
 | an error with no score: a screenshot the VM did not send, or Chrome DevTools timing out twice (told from the unit's log) | the upstream's own code failed | run the unit again |
 | a setup error after the runner was killed by signal 9, 15 or 1 | the runner was terminated, for example when the machine ran out of memory | check the machine, then run the unit again |
 | an error of no known cause | the runner died without its cleanup, of another signal with no traceback, or of another crash after a failed screenshot | read the log the message names, then run the unit again |
