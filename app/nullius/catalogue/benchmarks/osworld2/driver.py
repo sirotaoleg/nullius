@@ -49,6 +49,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import zipfile
 import zlib
 
 if sys.argv[1:2] in (["--reap"], ["--ward"]):
@@ -687,22 +688,64 @@ def _env(eid, assets=ASSETS, **extra):
 
 
 def _assets(dir, eid):
-    """The assets, with the task's mail profiles signed out of their live mailboxes and started offline."""
-    if eid not in MAILBOXES:
-        return ASSETS
-    own, root = f"task_{eid}", os.path.join(dir, "assets")
-    names = os.listdir(os.path.join(ASSETS, own))
-    missing = sorted(set(MAILBOXES[eid]) - set(names))
-    if missing:
-        raise RuntimeError(f"no {', '.join(missing)} in {os.path.join(ASSETS, own)}")
-    os.makedirs(os.path.join(root, own), exist_ok=True)
-    for src, dst in [(os.path.join(ASSETS, n), os.path.join(root, n)) for n in os.listdir(ASSETS) if n != own] + \
-            [(os.path.join(ASSETS, own, n), os.path.join(root, own, n)) for n in names if n not in MAILBOXES[eid]]:
-        if not os.path.lexists(dst):
-            os.symlink(src, dst)
-    for name in MAILBOXES[eid]:
-        _signed_out(os.path.join(ASSETS, own, name), os.path.join(root, own, name))
+    """The assets, with every mail profile among them signed out of its live mailboxes and started offline."""
+    own, root = os.path.join(ASSETS, f"task_{eid}"), os.path.join(dir, "assets")
+    if eid in MAILBOXES:
+        missing = sorted(set(MAILBOXES[eid]) - set(os.listdir(own)))
+        if missing:
+            raise RuntimeError(f"no {', '.join(missing)} in {own}")
+    _mirror(ASSETS, root, _profiles() | {os.path.join(own, n) for n in MAILBOXES.get(eid, ())})
     return root
+
+
+_SEEN = {}
+
+
+def _profiles():
+    """Each archive under ASSETS that holds a mail profile, by its content; a file is read again once it changes."""
+    found = set()
+    for d, _, files in os.walk(ASSETS, followlinks=True):
+        for f in files:
+            p = os.path.join(d, f)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            if _SEEN.get(p, (None,))[0] != (st.st_size, st.st_mtime_ns):
+                _SEEN[p] = (st.st_size, st.st_mtime_ns), _mail_profile(p)
+            if _SEEN[p][1]:
+                found.add(p)
+    return found
+
+
+def _mail_profile(path):
+    try:
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as z:
+                held = any(os.path.basename(n) == "prefs.js" and b"mail.server." in z.read(n) for n in z.namelist())
+        else:
+            with tarfile.open(path) as t:
+                return any(os.path.basename(m.name) == "prefs.js" and m.isfile()
+                           and b"mail.server." in t.extractfile(m).read() for m in t)
+    except (OSError, EOFError, zlib.error, tarfile.TarError, zipfile.BadZipFile):
+        return False
+    if held:
+        raise RuntimeError(f"{os.path.basename(path)} holds a mail profile in a zip, which this driver does not rewrite")
+    return False
+
+
+def _mirror(src, dst, profiles):
+    if os.path.islink(dst):
+        os.remove(dst)
+    os.makedirs(dst, exist_ok=True)
+    for n in os.listdir(src):
+        s, d = os.path.join(src, n), os.path.join(dst, n)
+        if s in profiles:
+            _signed_out(s, d)
+        elif any(p.startswith(s + os.sep) for p in profiles):
+            _mirror(s, d, profiles)
+        elif not os.path.lexists(d):
+            os.symlink(s, d)
 
 
 def _signed_out(src, dst):

@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -56,9 +57,70 @@ class SignedOut(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_other_tasks_keep_the_assets_folder(self):
-        self.assertEqual(self.driver._assets(self.unit, "007"), self.driver.ASSETS)
-        self.assertFalse(os.path.exists(os.path.join(self.unit, "assets")))
+    def add(self, *rel, files=None):
+        path = os.path.join(self.driver.ASSETS, *rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        archive(path, self.files if files is None else files)
+        return path
+
+    def tree(self):
+        out = {}
+        for d, _, files in os.walk(self.tmp.name):
+            for f in files:
+                with open(os.path.join(d, f), "rb") as h:
+                    out[os.path.join(d, f)] = h.read()
+        return out
+
+    def test_every_mail_profile_in_any_tasks_assets_is_signed_out_whatever_its_name(self):
+        self.add("task_006", "copy.tar.gz")
+        self.add("shared", "deep", "profile.tgz")
+        self.add("task_010", "kept.tar.gz", files={"data/prefs.js": b'user_pref("browser.x", true);\n', "a": b"b"})
+        os.symlink(os.path.join(self.tmp.name, "gone"), os.path.join(self.driver.ASSETS, "shared", "gone"))
+        for eid in ("006", "007"):
+            root = self.driver._assets(self.unit, eid)
+            self.assertEqual(root, os.path.join(self.unit, "assets"))
+            for rel in (("task_006", "thunderbird-profile.tar.gz"), ("task_006", "copy.tar.gz"),
+                        ("shared", "deep", "profile.tgz")):
+                with self.subTest(eid=eid, rel=rel):
+                    path = os.path.join(root, *rel)
+                    self.assertFalse(os.path.islink(path))
+                    got = members(path)
+                    self.assertFalse(any(n[len(PROFILE):] in SIGNED_IN for n in got))
+                    self.assertNotIn("true", got[PROFILE + "prefs.js"].decode())
+            self.assertEqual(os.path.realpath(os.path.join(root, "task_010")),
+                             os.path.realpath(os.path.join(self.driver.ASSETS, "task_010")))
+            self.assertEqual(os.path.realpath(os.path.join(root, "task_006", "sheet.xlsx")),
+                             os.path.realpath(os.path.join(self.driver.ASSETS, "task_006", "sheet.xlsx")))
+
+    def test_an_assets_file_is_read_again_only_once_it_changes(self):
+        self.driver._assets(self.unit, "007")
+        with mock.patch.object(self.driver, "_mail_profile", wraps=self.driver._mail_profile) as read:
+            self.driver._assets(self.unit, "007")
+            self.assertEqual(read.call_count, 0)
+            path = self.add("task_006", "sheet.xlsx")
+            self.driver._assets(self.unit, "007")
+        self.assertEqual(read.call_args_list, [mock.call(path)])
+        self.assertNotIn("true", members(os.path.join(self.unit, "assets", "task_006", "sheet.xlsx"))[
+            PROFILE + "prefs.js"].decode())
+
+    def test_a_mail_profile_in_a_zip_is_refused(self):
+        import zipfile
+        with zipfile.ZipFile(os.path.join(self.driver.ASSETS, "shared", "p.zip"), "w") as z:
+            z.writestr(PROFILE + "prefs.js", PREFS)
+        with self.assertRaisesRegex(RuntimeError, "p.zip holds a mail profile in a zip"):
+            self.driver._assets(self.unit, "007")
+
+    def test_the_copy_is_the_units_alone_and_goes_with_it(self):
+        self.add("shared", "profile.tar.gz")
+        os.makedirs(os.path.join(self.unit, "assets"))
+        os.symlink(os.path.join(self.driver.ASSETS, "task_006"), os.path.join(self.unit, "assets", "task_006"))
+        before = self.tree()
+        for eid in ("006", "007"):
+            self.driver._assets(self.unit, eid)
+        after = self.tree()
+        self.assertEqual({p: b for p, b in after.items() if not p.startswith(self.unit + os.sep)}, before)
+        shutil.rmtree(self.unit)
+        self.assertEqual(self.tree(), before)
 
     def test_the_profile_loses_its_sign_ins_and_keeps_its_mail(self):
         root = self.driver._assets(self.unit, "006")
@@ -125,10 +187,11 @@ class SignedOut(unittest.TestCase):
                 mock.patch.object(self.driver, "_task", lambda *_: {"instruction": "", "proxy": False}):
             for start in (lambda: self.driver.score("tasks__006", self.unit),
                           lambda: self.driver.answer("tasks__006", self.unit, "original", "MiniMax-M3",
-                                                     "http://127.0.0.1:9/v1", "k")):
+                                                     "http://127.0.0.1:9/v1", "k"),
+                          lambda: self.driver.score("tasks__012", self.unit)):
                 with self.assertRaises(KeyboardInterrupt):
                     start()
-        self.assertEqual([e["OSWORLD_FILE_BASE_URL"] for e in envs], [os.path.join(self.unit, "assets")] * 2)
+        self.assertEqual([e["OSWORLD_FILE_BASE_URL"] for e in envs], [os.path.join(self.unit, "assets")] * 3)
         self.assertEqual(self.driver._env("007")["OSWORLD_FILE_BASE_URL"], self.driver.ASSETS)
 
 

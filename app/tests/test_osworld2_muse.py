@@ -48,6 +48,7 @@ class Driver(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.driver = load_driver(self.tmp)
+        os.makedirs(self.driver.ASSETS)
         self.vms, self.runs = [], []
 
         def vm(dir, domain, eid):

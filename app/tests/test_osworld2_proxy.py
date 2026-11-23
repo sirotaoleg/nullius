@@ -631,6 +631,7 @@ class Driver(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.driver = load("osworld2_driver_proxy", os.path.join(HERE, "driver.py"), self.tmp)
+        os.makedirs(self.driver.ASSETS)
         self.envs, self.held, self.asked = [], [], []
 
         def start(dir, disk=None):
