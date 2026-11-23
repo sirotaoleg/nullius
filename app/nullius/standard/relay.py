@@ -485,6 +485,7 @@ def _facts(path: str, body: bytes, streamed: bool) -> dict:
     if error is None and errors:
         i = min(errors)
         error = dict(errors[i], choice=i)
+    refusal = refusal if end == "refusal" else None
     return {k: v for k, v in (("served_by", served), ("end", end), ("error", error), ("refusal", refusal)) if v is not None}
 
 

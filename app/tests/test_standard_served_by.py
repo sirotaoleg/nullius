@@ -274,6 +274,8 @@ class TheRelay(WithUpstream):
             with self.subTest(odd=odd):
                 said = relay.reply_facts("/messages", json.dumps(dict(body, stop_details=odd)).encode(), False)
                 self.assertEqual((said["end"], said.get("refusal")), ("refusal", kept))
+        ended = dict(MESSAGES, stop_details={"type": "end_turn"})
+        self.assertNotIn("refusal", relay.reply_facts("/messages", json.dumps(ended).encode(), False))
 
     def test_a_refusal_reaches_the_caller_as_sent_and_its_reason_is_recorded(self):
         details = {"type": "refusal", "category": "reasoning_extraction", "explanation": "words of the provider"}
@@ -632,7 +634,7 @@ class TheRecord(unittest.TestCase):
         self.assertEqual(job.served_total([{"standard": {"served": unit}}], also=other)["refusals"]["calls"], 4)
         odd = refused(); odd["reply"]["refusal"] = {"category": ["x"]}
         self.assertEqual(job.served([odd])["refusals"], {"calls": 1, "by_category": {"unstated": 1}})
-        self.assertNotIn("refusals", job.served([dict(refused("cyber"), status=429)]) or {})
+        self.assertNotIn("refusals", job.served([dict(refused("cyber"), status=429), self.call("m-1", "Prov A")]))
 
     def test_a_name_reads_as_a_slug_by_its_case_and_spaces_alone(self):
         pin = {"m-1": ["prov-a"]}
@@ -730,6 +732,19 @@ class TheReview(unittest.TestCase):
         self.assertEqual(merge._served([shard], [trial]), shard["result"]["served"])
         old = {"name": "s2", "config": {"standard": {"served_by": pin}}, "result": {}}          # a shard written before: its trials
         self.assertEqual(merge._served([old], [dict(trial, standard=dict(trial["standard"], shard_job="s2"))])["held"], {"m": True})
+
+    def test_a_merged_job_adds_up_each_shards_refusals(self):
+        refused = {"status": 200, "model": "m", "reply": {"served_by": "Prov A", "end": "refusal", "refusal": {"category": "cyber"}}}
+        unstated = {"status": 200, "model": "m", "reply": {"served_by": "Prov A", "end": "refusal"}}
+        t1 = {"standard": {"served": job.served([refused, unstated]), "shard_job": "s1"}}
+        bench = job.served([refused])
+        s1 = {"name": "s1", "config": {"standard": {}}, "result": {"served": job.served_total([t1], bench)}}
+        t2 = {"standard": {"served": job.served([refused]), "shard_job": "s2"}}
+        s2 = {"name": "s2", "config": {"standard": {}}, "result": {}}                       # written before: its trials
+        t3 = {"standard": {"served": {"calls": {"Prov A": 4}, "unnamed": 0}, "shard_job": "s3"}}  # a summary without the field
+        s3 = {"name": "s3", "config": {"standard": {}}, "result": {}}
+        self.assertEqual(merge._served([s1, s2, s3], [t1, t2, t3])["refusals"],
+                         {"calls": 4, "by_category": {"cyber": 3, "unstated": 1}})
 
     def test_a_control_is_refused_a_pin_on_its_simulated_users_model(self):
         b = dict(definitions.get("benchmark", "fakebench", ROOT), controls={"nop": {"source": "nullius", "from": "nothing"}},
