@@ -53,9 +53,23 @@ def run_single_example(agent, env, example, max_steps, instruction, args, out, s
             raise desktop_env.EnvironmentSetupError(%(words)r) from e
     if how == "other":
         raise ValueError(%(words)r)
+    if how == "infra":
+        from desktop_env.evaluators.errors import EvaluationInfrastructureError
+        EvaluationInfrastructureError(%(words)r, subtype=%(words)r)
     with open(os.path.join(out, "result.txt"), "w") as f:
         f.write("0.0")
 """ % {"words": WORDS}
+EVALUATOR_ERRORS = """from contextvars import ContextVar
+_error = ContextVar("evaluation_infrastructure_error", default=None)
+class EvaluationInfrastructureError(RuntimeError):
+    def __init__(self, message, *, subtype="unknown", details=None):
+        super().__init__(message)
+        _error.set(self)
+def consume_evaluation_infrastructure_error():
+    error = _error.get()
+    _error.set(None)
+    return error
+"""
 FAKE_NOP = """import json, os, sys, time
 print("Started container with ports", flush=True)
 print("[2026-11-07 01:02:03,456 ERROR desktopenv.setup] guest said: %(words)s", flush=True)
@@ -65,6 +79,9 @@ out = sys.argv[-1]
 if os.environ.get("FAKE_FAILED"):
     with open(os.path.join(out, "setup_failed.json"), "w") as f:
         json.dump(%(failed)r, f)
+if os.environ.get("FAKE_EVALUATION"):
+    with open(os.path.join(out, "evaluation_failed.json"), "w") as f:
+        json.dump({"error": "EvaluationInfrastructureError"}, f)
 with open(os.path.join(out, "result.txt"), "w") as f:
     f.write("0.0")
 time.sleep(float(os.environ.get("FAKE_HANG", "0")))
@@ -108,9 +125,12 @@ class TwoAttempts(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         up = os.path.join(self.tmp, "up")
         os.makedirs(os.path.join(up, "desktop_env"))
+        os.makedirs(os.path.join(up, "desktop_env", "evaluators"))
         for name, text in (("task_loader.py", TASK_LOADER), ("lib_run_single.py", LIB_RUN_SINGLE),
                            (os.path.join("desktop_env", "__init__.py"), ""),
-                           (os.path.join("desktop_env", "desktop_env.py"), DESKTOP_ENV)):
+                           (os.path.join("desktop_env", "desktop_env.py"), DESKTOP_ENV),
+                           (os.path.join("desktop_env", "evaluators", "__init__.py"), ""),
+                           (os.path.join("desktop_env", "evaluators", "errors.py"), EVALUATOR_ERRORS)):
             with open(os.path.join(up, name), "w") as f:
                 f.write(text)
         self.up = up
@@ -146,6 +166,15 @@ class TwoAttempts(unittest.TestCase):
         self.assertEqual(self.read("attempts"), "2")
         self.assertEqual(self.read("result.txt"), "0.0")
         self.assertFalse(os.path.exists(os.path.join(self.out, "setup_failed.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "evaluation_failed.json")))
+
+    def test_an_evaluation_that_says_its_dependency_failed_is_said_by_class_only(self):
+        done = self.nop("infra")
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(json.loads(self.read("evaluation_failed.json")), {"error": "EvaluationInfrastructureError"})
+        self.assertNotIn(WORDS, self.read("evaluation_failed.json") + done.stderr)
+        self.assertIn("the upstream's evaluation of tasks__001 said a dependency of its own failed: "
+                      "EvaluationInfrastructureError", done.stderr)
 
     def test_the_driver_reads_the_file_nop_writes(self):
         driver = load_driver(self.tmp)
@@ -231,6 +260,19 @@ class EndsEarly(unittest.TestCase):
     def test_a_setup_that_succeeds_scores(self):
         self.assertEqual(self.nop()["reward"], 0.0)
         self.assertEqual(len(self.reaped), 1)
+
+    def test_an_evaluation_whose_dependency_failed_is_the_environments_error_not_a_0(self):
+        with self.assertRaises(self.driver.EnvironmentSetupError) as raised:
+            self.nop(FAKE_EVALUATION="1")
+        self.assertIn("EvaluationInfrastructureError", str(raised.exception))
+        self.assertIn("the task was not scored", str(raised.exception))
+
+    def test_an_evaluation_failure_said_by_an_earlier_run_is_not_this_ones(self):
+        where = os.path.join(self.unit, "results", "nop", "tasks", "001")
+        os.makedirs(where)
+        with open(os.path.join(where, "evaluation_failed.json"), "w") as f:
+            json.dump({"error": "EvaluationInfrastructureError"}, f)
+        self.assertEqual(self.nop()["reward"], 0.0)
 
     def test_the_original_setup_is_never_ended_by_the_null_controls_file(self):
         given = []

@@ -20,6 +20,7 @@ from task_loader import find_task_class_path, load_task_config, resolve_task_jso
 
 SETUP_ATTEMPTS = 2
 SETUP_FAILED = "setup_failed.json"
+EVALUATION_FAILED = "evaluation_failed.json"
 
 
 class DoNothing:
@@ -28,6 +29,18 @@ class DoNothing:
 
     def predict(self, instruction, obs):
         return "", ["DONE"]
+
+
+def _evaluated(where, unit):
+    try:
+        from desktop_env.evaluators.errors import consume_evaluation_infrastructure_error
+    except ImportError:
+        return
+    error = consume_evaluation_infrastructure_error()
+    if error is not None:
+        with open(os.path.join(where, EVALUATION_FAILED), "w", encoding="utf-8") as f:
+            json.dump({"error": type(error).__name__}, f)
+        logging.error(f"the upstream's evaluation of {unit} said a dependency of its own failed: {type(error).__name__}")
 
 
 def _stop(signum, frame):
@@ -77,6 +90,7 @@ try:
     lib_run_single.run_single_example(DoNothing(), env, example, 1, instruction,
                                       argparse.Namespace(sleep_after_execution=3.0, result_dir=out,
                                                          checkpoint_eval_mode="off"), out, [])
+    _evaluated(out, f"{domain}__{eid}")
 except EnvironmentSetupError as e:
     with open(os.path.join(out, SETUP_FAILED), "w", encoding="utf-8") as f:
         json.dump({"error": type(e).__name__, "cause": type(e.__cause__).__name__ if e.__cause__ else None,

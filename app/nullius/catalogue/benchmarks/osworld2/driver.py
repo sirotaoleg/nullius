@@ -93,6 +93,9 @@ STOPPED_BY = (("turn limit", "time"), ("context window", "context window"), ("ba
               ("forecast", "money"))
 HELD_SECONDS = 300
 SETUP_FAILED = "setup_failed.json"
+EVALUATION_FAILED = "evaluation_failed.json"
+EVALUATED = ("the upstream's evaluation said a dependency of its own failed (EvaluationInfrastructureError), apart from "
+             "the agent's work, and the task was not scored")
 COLOUR = re.compile(r"\x1b\[[0-9;]*m")
 RECORD = re.compile(r"^(?:\x1b\[[0-9;]*m)?\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d")
 CAUSE = re.compile(r"^((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception|Exit|Interrupt)|ERROR)(?::|$)")
@@ -1609,6 +1612,8 @@ def _agent_score(where, dir, domain, eid):
         kind, said = _tail(log, code)
         raise kind(f"the runner exited {code}: {said}")
     trial = os.path.dirname(os.path.abspath(dir))
+    if os.path.lexists(os.path.join(trial, ".work", RUNNER_DIR, RESULTS, domain, eid, EVALUATION_FAILED)):
+        raise EnvironmentSetupError(EVALUATED)
     try:
         result = _plain(trial, ".work", RUNNER_DIR, RESULTS, domain, eid, "result.txt")
     except (OSError, RuntimeError) as e:
@@ -1673,8 +1678,9 @@ def _score(unit, dir, transcript=None, answer=None, setup=None, judge=None, **_)
             graded = _graded(eid, judge)
             vm = _vm(dir, domain, eid)
             os.makedirs(where, exist_ok=True)
-            if os.path.lexists(failed):
-                os.remove(failed)
+            for old in (failed, os.path.join(where, EVALUATION_FAILED)):
+                if os.path.lexists(old):
+                    os.remove(old)
             services = _services(held, dir, domain, eid, until)
             assets = _assets(dir, eid)
         _run([sys.executable, NOP, vm, PASSWORD, EXAMPLES, domain, eid, where],
@@ -1683,6 +1689,8 @@ def _score(unit, dir, transcript=None, answer=None, setup=None, judge=None, **_)
     if not os.path.exists(os.path.join(where, "result.txt")):
         kind, said = _tail(os.path.join(dir, "nop.log"))
         raise kind(f"the null control's run wrote no result.txt: {said}")
+    if os.path.lexists(os.path.join(where, EVALUATION_FAILED)):
+        raise EnvironmentSetupError(EVALUATED)
     refused = _grader_refused(dir, judge)
     _grader_failed(os.path.join(dir, "nop.log"), refused=len(refused))
     scored = _scored(where, "nop.py, DesktopEnv.evaluate")

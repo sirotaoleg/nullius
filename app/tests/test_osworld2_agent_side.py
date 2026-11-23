@@ -54,6 +54,22 @@ class Task(MultiPhaseTask):
 def get_task():
     return Task()
 '''
+INFRA = '''from desktop_env.evaluators.errors import EvaluationInfrastructureError
+from desktop_env.task_base import BaseTask
+
+
+class Task(BaseTask):
+    id = "903"
+    instruction = "Draw a part."
+
+    def evaluate(self, env):
+        EvaluationInfrastructureError("a program the evaluator needs is missing", subtype="missing")
+        return 0.0
+
+
+def get_task():
+    return Task()
+'''
 UNIT = "tasks__901"
 CLICK = "pyautogui.click(10, 20, clicks=1, button='left')"
 ENTER = "pyautogui.press('enter')"
@@ -140,7 +156,11 @@ class AgentSide(unittest.TestCase):
             os.symlink(os.path.join(OSWORLD2, name), os.path.join(up, name))
         shutil.copytree(os.path.join(FAKE, "desktop_env"), os.path.join(up, "desktop_env"))
         shutil.copyfile(os.path.join(OSWORLD2, "desktop_env", "task_base.py"), os.path.join(up, "desktop_env", "task_base.py"))
-        for eid, text in (("901", ONE), ("902", PHASES)):
+        os.makedirs(os.path.join(up, "desktop_env", "evaluators"))
+        open(os.path.join(up, "desktop_env", "evaluators", "__init__.py"), "w").close()
+        shutil.copyfile(os.path.join(OSWORLD2, "desktop_env", "evaluators", "errors.py"),
+                        os.path.join(up, "desktop_env", "evaluators", "errors.py"))
+        for eid, text in (("901", ONE), ("902", PHASES), ("903", INFRA)):
             with open(os.path.join(classes, f"task_{eid}.py"), "w") as f:
                 f.write(text)
         self.image = os.path.join(self.tmp, "image.qcow2")
@@ -270,6 +290,17 @@ class AgentSide(unittest.TestCase):
         self.assertEqual(score["reward"], 0.0)
         self.assertEqual([(t["step_num"], t["action"]) for t in self.traj()], [(1, CLICK), (2, "DONE")])
         self.assertEqual([e["last"] for e in self.events("evaluate")], ["DONE"])
+
+    def test_an_evaluation_whose_dependency_failed_is_the_environments_error_not_a_0(self):
+        self.docker()
+        s = self.session(self.setup("tasks__903"))
+        self.d.task_given(unit="tasks__903", dir=self.ws)
+        s.close()
+        with self.assertRaises(self.d.EnvironmentSetupError) as raised:
+            self.d.score(unit="tasks__903", dir=self.ws, transcript=[], answer="")
+        self.assertIn("EvaluationInfrastructureError", str(raised.exception))
+        self.assertNotIn("missing", str(raised.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.trial, "verifier", "osworld2", "result.txt")))
 
     def test_a_step_with_no_action_and_an_end_ends_the_task(self):
         s = self.session(self.setup())

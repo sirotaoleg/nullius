@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import json
 import logging
 import os
 import shutil
@@ -13,7 +14,20 @@ CLOSE_SECONDS = 60
 STOP_SECONDS = FINISH_SECONDS + CLOSE_SECONDS
 FOLDER = "/tmp/agent"
 SETUP_ATTEMPTS = 2
+EVALUATION_FAILED = "evaluation_failed.json"
 MULTI_PHASE = "a multi-phase task: agent.computer/v1 gives the agent one instruction"
+
+
+def _evaluated(where, unit):
+    try:
+        from desktop_env.evaluators.errors import consume_evaluation_infrastructure_error
+    except ImportError:
+        return
+    error = consume_evaluation_infrastructure_error()
+    if error is not None:
+        with open(os.path.join(where, EVALUATION_FAILED), "w", encoding="utf-8") as f:
+            json.dump({"error": type(error).__name__}, f)
+        logging.error(f"the upstream's evaluation of {unit} said a dependency of its own failed: {type(error).__name__}")
 
 
 class Desktop:
@@ -205,6 +219,7 @@ def run(a, port, stop, turn):
                                           argparse.Namespace(sleep_after_execution=a.pause, result_dir=a.result_dir,
                                                              checkpoint_eval_mode="off"),
                                           where, [])
+        _evaluated(where, f"{a.domain}__{a.task_id}")
     except SystemExit:
         failed, code = "the runner was stopped", 1
     except BaseException as e:
