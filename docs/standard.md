@@ -433,7 +433,7 @@ use the source folders and repository checks.
 
 | Op | Sent | Replies |
 | --- | --- | --- |
-| `units` | `dataset`, `setup` | Every unit id; `needs`, by unit, the ports a unit needs beyond the benchmark's |
+| `units` | `dataset`, `setup` | Every unit id; `needs`, by unit, ports beyond the benchmark's: an agent that has not proven one is not run on that unit |
 | `setup` | `unit`, `dir`; `attempt` with `limits.attempts`; `participant` (`agent`, `capability` or `control`) with `driver.participant` | `{prompt}`, any `mcp` servers, `environment`, an own image's `image`, `prepare`, `internet` and `verify`, and `agent_seconds`, the unit's own agent timeout (up to 6 hours, instead of `limits.turn_seconds`) |
 | `turn` | The transcript so far; `simulator: {model, base_url, key}` when there is one; `judge` for an upstream that grades as the conversation ends; `attempt` with `limits.attempts` | The next message, `{done: true}`, or `restart` |
 | `produce` | A capability benchmark's recall, `base_url` and `key` | The reading, through the relay |

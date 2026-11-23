@@ -8,7 +8,8 @@ Every process gets the assets folder (_assets) as OSWORLD_FILE_BASE_URL and the
 startup folder first on PYTHONPATH. Mock websites (websites.py), GitLab (gitlab_server.py) and a proxy
 (proxy.py) are the unit's services.
 
-units    - every task of the dataset, as domain__id
+units    - every task of the dataset, as domain__id, and the conversation port
+           for those with a simulated user or several phases
 setup    - the task's instruction, for the null control, from nop.py
            --instruction: loading a task runs its code, so it runs apart; for
            an agent, runner.py started and, at the loop's first step, the

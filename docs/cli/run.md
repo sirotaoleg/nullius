@@ -112,7 +112,7 @@ Each phase of a unit has a time limit. `--timeout PHASE=SECONDS` (repeatable) fo
 | Provider, network or setup error; agent crash; setup timeout | Yes |
 | Run or check out of time | Only if the provider was refusing the calls |
 | Wrong key, spent credit | No; three in a row stop the run |
-| A setup this machine lacks, a missing secret, a cap reached, Stop, a unit a guard asked to stop, a full context window, failed task | No |
+| A setup this machine lacks, a missing secret, a cap reached, Stop, a unit a guard asked to stop, a full context window, a missing port, failed task | No |
 
 `conform` and `prove` retry a rate limit once.
 

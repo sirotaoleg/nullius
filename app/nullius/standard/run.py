@@ -1009,7 +1009,7 @@ class Run:
             self.capped = bool(budget and budget["stopped"])
             job.write_result(self.job_dir, self.name, t0, time.time(), results, len(work), budget=budget,
                              served=job.served(self.benchmark_calls(), getattr(self, "serving", None)))
-            errored = sum(1 for x in results if x.get("exception_info"))
+            errored = sum(1 for x in results if job.errored(x))
             self.feed.emit("job.end", n_completed=len(results) - errored, n_errored=errored, n_cancelled=len(work) - len(results))
         # the units' stage says why it ended early: a line of its own would be a stage that never starts
         p.emit("units", "done", seconds=round(time.time() - u0, 1),
@@ -1353,8 +1353,8 @@ class Run:
         needs = (getattr(self, "unit_needs", None) or {}).get(unit)
         if self.other.get("_kind") != "agent" or not isinstance(needs, list) or not needs:
             return ""
-        why = match.fit(dict(self.bench, needs=[str(p) for p in needs], needs_skills={}), self.other)
-        return "not run: " + "; ".join(why) if why else ""
+        lacks = [str(p) for p in needs if match.fit(dict(self.bench, needs=[str(p)], needs_skills={}), self.other)]
+        return f"not run: needs {', '.join(lacks)}, which {self.other['label']} has not proven" if lacks else ""
 
     def _unit(self, i: int, unit: str, r: int = 1, retry: int = 0) -> Optional[dict]:
         if self._stopped.is_set() or (getattr(self, "_halt", None) is not None and self._halt.is_set()):
@@ -1535,7 +1535,7 @@ class Run:
             # the Stop ended its agent, its relay or its containers under it: what it then failed with is
             # the Stop's doing, not the agent's nor the environment's (Harbor's name for a stopped trial)
             exc = (CANCELLED, "the run was stopped before this unit ended" + (f"; it then failed with {exc[0]}" if exc else ""))
-        if traj is None and self.other["_kind"] == "agent":
+        if traj is None and self.other["_kind"] == "agent" and not (exc and exc[0] == job.NO_PORT):
             traj = job.trajectory_from_events([], calls, self.other, self.model, f"{self.name}/{unit}")
         if traj is not None and setup.get("mcp"):    # how a reader tells the benchmark's tools in any agent's spelling
             traj["extra"] = dict(traj.get("extra") or {}, mcp_servers=[str(m.get("name")) for m in setup["mcp"] if m.get("name")])
@@ -1550,7 +1550,7 @@ class Run:
                                                     if rl is not None else []),
                               image=(box.image if box is not None else getattr(rl, "unit_image", "")) or "")
         install.prune(self.other, home)          # its declared caches: the trial is written, no one reads them now
-        verdict = "error " + exc[0] if exc else f"reward {score.get('reward')}"
+        verdict = "error " + exc[0] if exc and exc[0] != job.NO_PORT else ("no port, " if exc else "") + f"reward {score.get('reward')}"
         self.say(f"  {unit}: {verdict}")
         self.said_unit(unit, score, exc, retry)
         if self.feed is not None:
@@ -1652,7 +1652,7 @@ class Run:
         if retry:
             self.progress.emit("unit", "retried", unit=unit)
         score = score or {}
-        if exc:
+        if exc and exc[0] != job.NO_PORT:
             how = {"outcome": "error", "error": exc[0]}
         elif self.bench["score"]["kind"] == "pass":
             how = {"outcome": "passed" if score.get("reward") == 1.0 else "failed", "reward": score.get("reward")}

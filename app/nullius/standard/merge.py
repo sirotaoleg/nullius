@@ -277,7 +277,7 @@ def result_of(shards: list, results: List[dict]) -> dict:
     planned = sum(int(s["result"].get("n_total_trials") or len(s["trials"])) for s in shards)
     starts = [s["result"].get("started_at") for s in shards if s["result"].get("started_at")]
     ends = [s["result"].get("finished_at") for s in shards if s["result"].get("finished_at")]
-    errored = sum(1 for r in results if r.get("exception_info"))
+    errored = sum(1 for r in results if job.errored(r))
     rewards = [(r.get("verifier_result") or {}).get("rewards") or {} for r in results]
     scores = [w["score"] for w in rewards if "score" in w]
     budget = _budget([s["result"].get("budget") for s in shards])

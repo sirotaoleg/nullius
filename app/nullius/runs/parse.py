@@ -1078,7 +1078,7 @@ def split_agents(jobs: list) -> list:
                 job, job_id=vid, model_name=a["model"], agent_name=a["name"], reasoning_effort=a["effort"],
                 trials=trials, harbor_command=a["command"], agents=[],
                 n_total_trials=job.n_total_trials // k if job.n_total_trials % k == 0 else len(trials),
-                n_errored_trials=sum(1 for t in trials if t.exception_type),
+                n_errored_trials=sum(1 for t in trials if t.exception_type and t.outcome != classify.NO_PORT),
                 n_running_trials=job.n_running_trials // k + (i < job.n_running_trials % k),
                 n_pending_trials=job.n_pending_trials // k + (i < job.n_pending_trials % k),
                 n_retries=job.n_retries // k + (i < job.n_retries % k)))

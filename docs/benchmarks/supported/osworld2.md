@@ -62,7 +62,7 @@ Long-horizon, real-world tasks on an Ubuntu desktop, across its apps, each in a 
 - Tasks 103 and 104 are not supported: they stay in the datasets; without FreeCAD on this machine the null control scores them 0, and an agent's or the Original setup's unit is refused before its VM starts.
 - A slow or loaded machine, or a run across 16:00 UTC (the VM's midnight), can change scores.
 - The null control scores above 0 on 015, 076, 090 and 092, and on 077 in some runs.
-- An agent without agent.conversation/v1 is not run on the 6 tasks with the simulated user or the task with several phases: each scores 0 as Missing port.
+- An agent through the computer port gets no task with the simulated user (6) or several phases (1): without the conversation port it scores 0 on each, as Missing port; with it, each ends in a setup error, outside the mean.
 - Fetch the gated tasks and prepare the machine first: see OSWorld2 machine setup in the docs.
 
 ## Cite

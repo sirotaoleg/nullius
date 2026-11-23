@@ -623,6 +623,10 @@ _INFRA = ("Setup", "Verifier", "Api", "RateLimit", "Environment", "Docker", "Bui
 NO_PORT = "NoPortError"
 
 
+def errored(r: dict) -> bool:
+    return bool(r.get("exception_info")) and r["exception_info"].get("exception_type") != NO_PORT
+
+
 FEED_PHASES = (("env_setup", "environment_setup"), ("agent_setup", "agent_setup"), ("agent_run", "agent_execution"), ("verify", "verifier"))
 
 
@@ -669,7 +673,7 @@ def pass_hat(results: List[dict]) -> Optional[dict]:
         rewards = (r.get("verifier_result") or {}).get("rewards") or {}
         if u is None:
             continue
-        if r.get("exception_info") or "reward" not in rewards:
+        if errored(r) or "reward" not in rewards:
             broken.add(u)
             continue
         per.setdefault(u, []).append(rewards["reward"] == 1.0)
@@ -692,12 +696,12 @@ def write_result(job_dir: str, job: str, t0: float, t1: float, results: List[dic
     what was spent, whether it stopped the run, the units it cut off and
     those never begun. ``served``: who served the benchmark's own relay's
     calls (:func:`served`); the job's ``served`` adds its trials' to them."""
-    errored = sum(1 for r in results if r.get("exception_info"))
+    n_errored = sum(1 for r in results if errored(r))
     hat = pass_hat(results)
     who = served_total(results, served)
     with open(os.path.join(job_dir, "result.json"), "w") as f:
         json.dump({"id": job, "started_at": iso(t0), "finished_at": iso(t1), "n_total_trials": planned,
-                   "stats": {"n_completed_trials": len(results) - errored, "n_errored_trials": errored,
+                   "stats": {"n_completed_trials": len(results) - n_errored, "n_errored_trials": n_errored,
                              "n_cancelled_trials": planned - len(results), "n_running_trials": 0, "n_pending_trials": 0,
                              "n_retries": n_retries(results)},
                    **({"pass_hat_k": hat} if hat else {}), **({"budget": budget} if budget else {}),

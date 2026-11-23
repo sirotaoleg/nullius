@@ -10,8 +10,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from nullius.runs import classify, parse
-from nullius.standard import definitions, install, job as jobs, run
+from nullius.runs import attempts, classify, parse
+from nullius.standard import definitions, install, job as jobs, merge, run
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_osworld2_judge import load_driver  # noqa: E402
@@ -48,18 +48,18 @@ class NoPort(unittest.TestCase):
             setattr(self, name, patch.start())
             self.addCleanup(patch.stop)
 
-    def go(self, other, kind="score", reward=0.5):
+    def go(self, other, kind="score", reward=0.5, **kw):
         here = tempfile.mkdtemp(dir=self.tmp)
         with open(os.path.join(here, "driver.py"), "w") as f:
             f.write(DRIVER.replace("REWARD", repr(reward)))
         b = dict(BENCH, _here=here, _kind="benchmark", score={"kind": kind, "says": "the answer"})
         job = run.run(b, other, model="m-1", provider="custom", jobs_root=tempfile.mkdtemp(dir=self.tmp), concurrency=1,
-                      env={"MODEL_API_URL": "http://127.0.0.1:9/v1"}, say=lambda s: None, unsandboxed=True)
+                      env={"MODEL_API_URL": "http://127.0.0.1:9/v1"}, say=lambda s: None, unsandboxed=True, **kw)
         trials = {}
-        for d in os.listdir(job):
+        for d in sorted(os.listdir(job)):
             if "__u" in d:
                 with open(os.path.join(job, d, "result.json")) as f:
-                    trials[d.split("__")[0]] = json.load(f)
+                    trials[d] = json.load(f)
         return job, trials
 
     def agent_def(self, proven=False):
@@ -71,23 +71,41 @@ class NoPort(unittest.TestCase):
 
     def test_an_agent_without_the_port_scores_0_on_that_unit_and_it_is_never_set_up(self):
         job, trials = self.go(self.agent_def())
-        b = trials["b"]
+        b = trials["b__u0001"]
         self.assertEqual(b["exception_info"]["exception_type"], jobs.NO_PORT)
-        self.assertIn(CONVERSATION, b["exception_info"]["exception_message"])
+        self.assertEqual(b["exception_info"]["exception_message"], f"not run: needs {CONVERSATION}, which Fake agent has not proven")
+        self.assertFalse(os.path.exists(os.path.join(job, "b__u0001", "agent", "trajectory.json")))
+        with open(os.path.join(job, "progress.jsonl")) as f:
+            ended = {r["unit"]: r["outcome"] for r in map(json.loads, f) if r.get("stage") == "unit" and r.get("state") == "done"}
+        self.assertEqual(ended, {"a": "scored", "b": "scored"})
         self.assertIs(b["exception_info"]["retryable"], False)
         self.assertEqual(b["verifier_result"]["rewards"], {"score": 0.0})
-        self.assertIsNone(trials["a"].get("exception_info"))
+        self.assertIsNone(trials["a__u0000"].get("exception_info"))
         self.assertEqual(sorted(f for f in os.listdir(job) if f.startswith("setup-")), ["setup-a"])
         self.assertEqual(self.drive_agent.call_count, 1)
         j = parse.parse_job(job)
         self.assertEqual({t.task_base: t.outcome for t in j.trials}, {"a": classify.SCORED, "b": classify.NO_PORT})
         self.assertEqual((j.counts[classify.NO_PORT], j.n_infra, j.mean_score), (1, 0, 0.25))
+        with open(os.path.join(job, "result.json")) as f:
+            stats = json.load(f)["stats"]
+        self.assertEqual((stats["n_completed_trials"], stats["n_errored_trials"]), (2, 0))
+        self.assertEqual(merge.result_of([{"result": {"n_total_trials": 2}, "trials": []}], list(trials.values()))["stats"]["n_errored_trials"], 0)
+        tried = attempts.Attempts(tuple(t for t in j.trials if t.task_base == "b"))
+        self.assertEqual((tried.has_verdicts, tried.rate), (False, 0.0))
 
     def test_on_a_pass_benchmark_it_stays_in_the_adjusted_rate(self):
         job, trials = self.go(self.agent_def(), kind="pass", reward=1.0)
-        self.assertEqual(trials["b"]["verifier_result"]["rewards"], {"reward": 0.0})
+        self.assertEqual(trials["b__u0001"]["verifier_result"]["rewards"], {"reward": 0.0})
         j = parse.parse_job(job)
         self.assertEqual((j.raw_solve_rate, j.adjusted_solve_rate), (0.5, 0.5))
+
+    def test_repeated_it_counts_as_failed_attempts(self):
+        job, trials = self.go(self.agent_def(), kind="pass", reward=1.0, repeat=2)
+        self.assertEqual(sorted(t["standard"]["unit"] for t in trials.values()), ["a", "a", "b", "b"])
+        with open(os.path.join(job, "result.json")) as f:
+            hat = json.load(f)["pass_hat_k"]
+        self.assertEqual((hat["units"], hat["1"]), (2, 0.5))
+        self.assertEqual(attempts.for_job(parse.parse_job(job))["hat"][1], 0.5)
 
     def test_an_agent_with_the_port_and_the_null_control_run_it_as_before(self):
         control = definitions.control(BENCH, "nop")
