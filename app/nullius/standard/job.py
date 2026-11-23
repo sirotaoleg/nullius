@@ -453,7 +453,8 @@ def served(calls: List[dict], serving: Optional[Dict[str, List[str]]] = None) ->
     if refused:
         cats: Dict[str, int] = {}
         for r in refused:
-            cat = ((r.get("refusal") or {}).get("category") if isinstance(r.get("refusal"), dict) else None) or "unstated"
+            cat = r["refusal"].get("category") if isinstance(r.get("refusal"), dict) else None
+            cat = cat if isinstance(cat, str) and cat else "unstated"
             cats[cat] = cats.get(cat, 0) + 1
         out["refusals"] = {"calls": len(refused), "by_category": dict(sorted(cats.items()))}
     if serving:

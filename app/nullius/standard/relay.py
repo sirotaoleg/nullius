@@ -11,8 +11,8 @@ byte for byte - and recorded once it is complete, one line per call in
 the tokens, and an abridged request and reply. Three API shapes are read,
 Chat Completions, Responses and Anthropic's Messages, streamed or not. Read
 apart from the rest (:func:`reply_facts`), the reply also says, when it does,
-the serving provider that answered (``served_by``), how it ended (``end``)
-and an error it holds though its status was a success (``error``); reading
+the serving provider that answered (``served_by``), how it ended (``end``),
+a refusal's stated type and category (``refusal``) and an error it holds though its status was a success (``error``); reading
 them never changes what the caller receives, nor the rest of the record but a failed Responses object's cost. The
 cost is the provider's when it says it (OpenRouter's ``usage.cost``), else an
 estimate from ``prices`` when one is given for exactly that model (the
@@ -431,10 +431,15 @@ def _status(resp) -> Optional[str]:
     return f"{resp['status']}: {why}" if why else resp["status"]
 
 
+_CODE = re.compile(r"[a-z0-9_]{1,64}")
+
+
 def _refusal(details) -> Optional[dict]:
-    """A refusal's stated reason (Messages' ``stop_details``): its type and category, never its words."""
-    got = {k: details[k] for k in ("type", "category") if isinstance(details, dict) and _name(details.get(k))}
-    return got if got.get("category") else None
+    """A refusal's stated reason (Messages' ``stop_details``): its type and category when each reads as a code,
+    never its words."""
+    got = {k: details[k] for k in ("type", "category")
+           if isinstance(details, dict) and isinstance(details.get(k), str) and _CODE.fullmatch(details[k])}
+    return got or None
 
 
 def _facts(path: str, body: bytes, streamed: bool) -> dict:
