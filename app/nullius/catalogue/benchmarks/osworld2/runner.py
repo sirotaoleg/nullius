@@ -62,16 +62,32 @@ class Desktop:
         return self.env.client_password
 
 
+def judged(fd):
+    with os.fdopen(fd, "rb") as f:
+        said = f.read()
+    if not said:
+        raise SystemExit(1)
+    os.environ.update(json.loads(said))
+
+
 class Watched:
-    def __init__(self, env, desktop):
+    def __init__(self, env, desktop, judge=None):
         object.__setattr__(self, "_env", env)
         object.__setattr__(self, "_desktop", desktop)
+        object.__setattr__(self, "_judge", judge)
 
     def step(self, *args, **kwargs):
         out = self._env.step(*args, **kwargs)
         obs = out[0] if isinstance(out, tuple) and out else None
         self._desktop.shot = obs.get("screenshot") if isinstance(obs, dict) else None
         return out
+
+    def evaluate(self, *args, **kwargs):
+        if self._judge is not None:
+            fd = self._judge
+            object.__setattr__(self, "_judge", None)
+            judged(fd)
+        return self._env.evaluate(*args, **kwargs)
 
     def __getattr__(self, name):
         return getattr(self._env, name)
@@ -152,6 +168,7 @@ def main(argv=None):
     for name in ("--held", "--prepared", "--given"):
         p.add_argument(name)
     p.add_argument("--lifeline", type=int, required=True)
+    p.add_argument("--judge", type=int)
     p.add_argument("--steps", type=int, required=True)
     p.add_argument("--pause", type=float, required=True)
     a = p.parse_args(argv)
@@ -215,7 +232,7 @@ def run(a, port, stop, turn):
                                            prepared=a.prepared)
         server = port.Server(bridge, a.socket, a.calls)
         turn.bridge = bridge
-        lib_run_single.run_single_example(bridge, Watched(env, desktop), example, a.steps, example["instruction"],
+        lib_run_single.run_single_example(bridge, Watched(env, desktop, a.judge), example, a.steps, example["instruction"],
                                           argparse.Namespace(sleep_after_execution=a.pause, result_dir=a.result_dir,
                                                              checkpoint_eval_mode="off"),
                                           where, [])

@@ -70,6 +70,24 @@ class Task(BaseTask):
 def get_task():
     return Task()
 '''
+JUDGED = '''import os
+
+from desktop_env.task_base import BaseTask
+
+
+class Task(BaseTask):
+    id = "003"
+    instruction = "Say what the picture shows."
+
+    def evaluate(self, env):
+        said = [os.environ.get("OSWORLD_EVAL_MODEL_" + k) for k in ("PROVIDER", "NAME", "BASE_URL", "API_KEY")]
+        return 1.0 if said == ["anthropic", "judge-model", "http://127.0.0.1:9/u-judge", "word"] else 0.0
+
+
+def get_task():
+    return Task()
+'''
+JUDGE = {"model": "judge-model", "base_url": "http://127.0.0.1:9/u-judge/v1", "key": "word"}
 UNIT = "tasks__901"
 CLICK = "pyautogui.click(10, 20, clicks=1, button='left')"
 ENTER = "pyautogui.press('enter')"
@@ -160,7 +178,7 @@ class AgentSide(unittest.TestCase):
         open(os.path.join(up, "desktop_env", "evaluators", "__init__.py"), "w").close()
         shutil.copyfile(os.path.join(OSWORLD2, "desktop_env", "evaluators", "errors.py"),
                         os.path.join(up, "desktop_env", "evaluators", "errors.py"))
-        for eid, text in (("901", ONE), ("902", PHASES), ("903", INFRA)):
+        for eid, text in (("901", ONE), ("902", PHASES), ("903", INFRA), ("003", JUDGED)):
             with open(os.path.join(classes, f"task_{eid}.py"), "w") as f:
                 f.write(text)
         self.image = os.path.join(self.tmp, "image.qcow2")
@@ -368,11 +386,60 @@ class AgentSide(unittest.TestCase):
         self.assertEqual(self.d.RUNNERS, {})
         self.assertTrue(self.docker_ps(calls))
 
-    def test_tasks_the_port_cannot_serve_are_refused_before_a_vm(self):
-        for unit, said in (("tasks__003", "LLM grader"), ("tasks__024", "simulated user")):
-            with self.assertRaisesRegex(self.d.EnvironmentSetupError, said):
-                self.setup(unit)
+    def test_a_task_with_a_simulated_user_is_refused_before_a_vm(self):
+        with self.assertRaisesRegex(self.d.EnvironmentSetupError, "simulated user"):
+            self.setup("tasks__024")
         self.assertFalse(os.path.exists(os.path.join(self.trial, ".work")))
+
+    def judged(self, judge):
+        s = self.session(self.setup("tasks__003"))
+        self.d.task_given(unit="tasks__003", dir=self.ws)
+        s.call("step", actions=[CLICK], end="done")
+        s.close()
+        time.sleep(1)
+        return self.d.score(unit="tasks__003", dir=self.ws, transcript=[], answer="", **judge)
+
+    def test_a_judged_task_is_scored_with_the_runs_judge_route(self):
+        self.assertEqual(self.judged({"judge": JUDGE})["reward"], 1.0)
+        self.assertEqual(len(self.events("evaluate")), 1)
+
+    def test_a_judged_task_with_no_judge_route_is_not_scored(self):
+        with self.assertRaisesRegex(RuntimeError, "no judge route"):
+            self.judged({})
+        runner = self.runner()
+        self.d.end(unit="tasks__003", dir=self.ws)
+        self.assertTrue(gone(runner))
+        self.assertFalse(self.events("evaluate"))
+
+    def test_a_judge_call_that_failed_is_the_scores_error(self):
+        relay = os.path.join(self.trial, ".work", "relay")
+        os.makedirs(relay)
+        with open(os.path.join(relay, "u-judge.jsonl"), "w") as f:
+            f.write(json.dumps({"t0": 1, "status": 500, "request": {"sha256": "a"}}) + "\n")
+        with self.assertRaisesRegex(self.d.VerifierError, "endpoint answered 500"):
+            self.judged({"judge": JUDGE})
+
+
+class JudgePipe(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("osworld2_runner", os.path.join(HERE, "runner.py"))
+        self.runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.runner)
+
+    def pipe(self, said: bytes) -> int:
+        r, w = os.pipe()
+        os.write(w, said)
+        os.close(w)
+        return r
+
+    def test_the_judge_route_reaches_the_environment(self):
+        with mock.patch.dict(os.environ, {}):
+            self.runner.judged(self.pipe(b'{"OSWORLD_EVAL_MODEL_NAME": "judge-model"}'))
+            self.assertEqual(os.environ["OSWORLD_EVAL_MODEL_NAME"], "judge-model")
+
+    def test_a_pipe_closed_with_nothing_stops_the_runner(self):
+        with mock.patch.dict(os.environ, {}), self.assertRaises(SystemExit):
+            self.runner.judged(self.pipe(b""))
 
 
 if __name__ == "__main__":

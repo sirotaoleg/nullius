@@ -1392,12 +1392,10 @@ def _agent_setup(domain, eid, dir):
     until = time.time() + _setup_seconds() - CLOSE_SECONDS
     for old in list(RUNNERS):
         _release(old)
-    if eid in JUDGED:
-        raise EnvironmentSetupError(f"task {eid} is scored by the LLM grader, which an agent's unit does not reach yet")
     if eid in ASKS_USER:
         raise EnvironmentSetupError(f"task {eid} has a simulated user, which agent.computer/v1 does not reach")
     where, held = _runner_dir(dir), contextlib.ExitStack()
-    sock_dir = life_r = life_w = p = lock = reaper = None
+    sock_dir = life_r = life_w = judge_r = judge_w = p = lock = reaper = None
     done, seen = threading.Event(), []
     log = os.path.join(where, "runner.log")
     try:
@@ -1414,6 +1412,7 @@ def _agent_setup(domain, eid, dir):
             os.makedirs(_held_dir(dir), mode=0o700, exist_ok=True)
             sock_dir = tempfile.mkdtemp(prefix="osworld2-")
             life_r, life_w = os.pipe()
+            judge_r, judge_w = os.pipe()
             lock = os.fdopen(websites.opened(START_LOCK))
         steps = os.environ.get("NULLIUS_OPTION_MAX_STEPS", "default")
         ready = os.path.join(sock_dir, "ready.json")
@@ -1422,7 +1421,8 @@ def _agent_setup(domain, eid, dir):
                 "--vm", vm, "--calls", os.path.join(where, "computer-calls.jsonl"), "--password", PASSWORD,
                 "--lifeline", str(life_r), "--steps", AGENT_STEPS if steps == "default" else steps,
                 "--pause", AGENT_PAUSE, "--held", _held_dir(dir),
-                "--prepared", os.path.join(where, "computer-prepare.jsonl"), "--given", os.path.join(sock_dir, "given.json")]
+                "--prepared", os.path.join(where, "computer-prepare.jsonl"), "--given", os.path.join(sock_dir, "given.json"),
+                "--judge", str(judge_r)]
         env = _env(eid, assets, **services)
         env["PYTHONPATH"] = os.pathsep.join(
             [env["PYTHONPATH"], os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_port().__file__))))])
@@ -1435,7 +1435,7 @@ def _agent_setup(domain, eid, dir):
                     raise EnvironmentSetupError("the runner was not started: the unit's time ran out")
         with open(log, "a") as f:
             p = subprocess.Popen(argv, cwd=where, env=env, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                 start_new_session=True, pass_fds=(life_r,))
+                                 start_new_session=True, pass_fds=(life_r, judge_r))
         reaper = _arm(p.pid, where, True, _start_time(p.pid))
         threading.Thread(target=_noting, args=(where, done, seen), daemon=True).start()
         t0 = time.time()
@@ -1459,7 +1459,7 @@ def _agent_setup(domain, eid, dir):
             p.wait()
         elif p is not None:
             _hand_over(p, reaper, where, seen)
-        for fd in (life_r, life_w):
+        for fd in (life_r, life_w, judge_r, judge_w):
             if fd is not None:
                 os.close(fd)
         held.close()
@@ -1470,8 +1470,9 @@ def _agent_setup(domain, eid, dir):
         if lock is not None:
             lock.close()
     os.close(life_r)
-    RUNNERS[where] = {"p": p, "sock_dir": sock_dir, "life": life_w, "held": held, "reaper": reaper, "done": done,
-                      "seen": seen}
+    os.close(judge_r)
+    RUNNERS[where] = {"p": p, "sock_dir": sock_dir, "life": life_w, "judge": judge_w, "held": held, "reaper": reaper,
+                      "done": done, "seen": seen}
     with open(os.path.join(where, "runner.json"), "w", encoding="utf-8") as f:
         json.dump({"pid": p.pid}, f)
     try:
@@ -1523,10 +1524,11 @@ def task_given(unit, dir, **_):
 
 
 def _let_go(entry):
-    if entry.get("life") is not None:
-        with contextlib.suppress(OSError):
-            os.close(entry["life"])
-        entry["life"] = None
+    for name in ("judge", "life"):
+        if entry.get(name) is not None:
+            with contextlib.suppress(OSError):
+                os.close(entry[name])
+            entry[name] = None
 
 
 def _exited(p):
@@ -1592,10 +1594,16 @@ def _plain(base, *parts):
         return f.read()
 
 
-def _agent_score(where, dir, domain, eid):
+def _agent_score(where, dir, domain, eid, judge):
     entry = RUNNERS.get(where)
     if entry is None:
         raise RuntimeError("no runner of this driver's for this unit: its result is not read")
+    graded = _graded(eid, judge)
+    if entry.get("judge") is not None:
+        with contextlib.suppress(OSError):
+            os.write(entry["judge"], json.dumps(graded).encode())
+        os.close(entry["judge"])
+        entry["judge"] = None
     if entry.get("life") is not None:
         with contextlib.suppress(OSError):
             os.write(entry["life"], _port().TURN_END + b"\n")
@@ -1631,11 +1639,12 @@ def _agent_score(where, dir, domain, eid):
     for name, data in [("result.txt", result)] + sorted(kept.items()):
         with open(os.path.join(out, name), "wb") as f:
             f.write(data)
-    _grader_failed(log)
+    refused = _grader_refused(dir, judge)
+    _grader_failed(log, refused=len(refused))
     scored = _scored(out, "runner.py, run_single_example, DesktopEnv.evaluate")
     _unread(scored["reward"], log, retried=eid in RETRIES_SITE_READS)
     scored["detail"]["tool_calls"] = len(kept["computer-calls.jsonl"].splitlines())
-    return dict(scored, **_setup_errors(log))
+    return dict(scored, **({"grader_refused": sorted(set(refused))} if refused else {}), **_setup_errors(log))
 
 
 def score(*a, **kw):
@@ -1668,7 +1677,7 @@ def _score(unit, dir, transcript=None, answer=None, setup=None, judge=None, **_)
         raise RuntimeError(f"unknown setup {setup}: OSWorld2 runs original and its null control")
     runner = _runner_dir(dir)
     if runner in RUNNERS or os.path.lexists(os.path.join(runner, "runner.json")):
-        return _agent_score(runner, dir, domain, eid)
+        return _agent_score(runner, dir, domain, eid, judge)
     if answer:
         raise RuntimeError("no runner was set up for this unit: an agent's setup starts one")
     until = time.time() + _score_seconds() - 2 * CLOSE_SECONDS
