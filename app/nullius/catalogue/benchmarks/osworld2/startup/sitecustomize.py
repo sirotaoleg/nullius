@@ -55,8 +55,9 @@ STOP = "OSWORLD2_STOP"
 MARK = "_nullius_osworld2"
 HIDDEN = "<proxy password>"
 SNAPS = "OSWORLD2_SNAPS"
+SNAP_URL = "OSWORLD2_SNAP_URL"
 SNAP_CACHE = "/var/lib/snapd/cache"
-SNAP_UPLOADS = "/tmp/nullius-snaps"
+SNAP_SECONDS = 900
 
 
 class WriteLimitError(RuntimeError):
@@ -332,37 +333,47 @@ def floor_desktop_env(module):
     cls.__init__ = wrapped
 
 
-def _guest(controller, command):
+def _guest(controller, command, seconds=60):
     import requests
-    said = requests.post(controller.http_server + "/setup/execute", json={"command": command, "shell": True}, timeout=300)
+    said = requests.post(controller.http_server + "/setup/execute",
+                         json={"command": command, "shell": True, "timeout": seconds}, timeout=seconds + 30)
     return said.status_code == 200 and str(said.json().get("returncode", 1)) == "0"
 
 
-def _root(controller, command):
-    return _guest(controller, f"echo '{controller.client_password}' | sudo -S sh -c '{command}'")
+def _root(controller, command, seconds=60):
+    return _guest(controller, f"echo '{controller.client_password}' | sudo -S sh -c '{command}'", seconds)
+
+
+def _fetch(snap, url):
+    """The guest's own download of one snap from the driver into snapd's cache, kept only with the store's sha3-384
+    and size."""
+    sha, part = snap["sha3_384"], f"{SNAP_CACHE}/{snap['sha3_384']}.part"
+    return (f"mkdir -p {SNAP_CACHE} && (curl -fsS --max-time {SNAP_SECONDS} -o {part} {url}/{sha} || "
+            f"wget -q -T {SNAP_SECONDS} -O {part} {url}/{sha}) && test \"$(stat -c %s {part})\" = {snap['size']} && "
+            f"test \"$(openssl dgst -sha3-384 -r {part} | cut -d\" \" -f1)\" = {sha} && "
+            f"mv {part} {SNAP_CACHE}/{sha} && chmod 0644 {SNAP_CACHE}/{sha} || {{ rm -f {part}; exit 1; }}")
 
 
 def _seeded(controller, use_proxy, environ=os.environ):
-    """Each listed snap the guest lacks, put into snapd's download cache by its sha3-384 before the task's setup:
+    """Each listed snap the guest lacks, fetched by the guest into snapd's download cache before the task's setup:
     snapd links a file there for the revision the store names and downloads the snap itself otherwise."""
+    log = logging.getLogger("nullius.osworld2")
     try:
         with open(environ[SNAPS], encoding="utf-8") as f:
             listed = json.load(f)
-        if not controller.ensure_ready(use_proxy) or not _guest(controller, f"mkdir -p {SNAP_UPLOADS}"):
+        if not controller.ensure_ready(use_proxy):
             return []
         placed = []
         for snap in listed:
-            if not os.path.exists(snap["file"]) or _guest(controller, f"snap list {snap['name']}"):
+            if _guest(controller, f"snap list {snap['name']}"):
                 continue
-            upload = f"{SNAP_UPLOADS}/{snap['sha3_384']}"
-            controller._upload_file_setup([{"local_path": snap["file"], "path": upload}])
-            cached = f"{SNAP_CACHE}/{snap['sha3_384']}"
-            if _root(controller, f"mkdir -p {SNAP_CACHE} && mv {upload} {cached} && chown root:root {cached} && "
-                                 f"chmod 0644 {cached} && touch {cached}"):
+            if _root(controller, _fetch(snap, environ[SNAP_URL]), SNAP_SECONDS + 120):
                 placed.append(snap)
+            else:
+                log.info("snap cache %s: not delivered", snap["name"])
         return placed
     except Exception as e:
-        logging.getLogger("nullius.osworld2").warning("snap cache not used: %s", type(e).__name__)
+        log.warning("snap cache not used: %s", type(e).__name__)
         return []
 
 
@@ -388,7 +399,7 @@ def seed_snaps(module):
     @functools.wraps(setup)
     def wrapped(self, *args, **kwargs):
         use_proxy = args[1] if len(args) > 1 else kwargs.get("use_proxy", False)
-        placed = _seeded(self.setup_controller, use_proxy) if os.environ.get(SNAPS) else []
+        placed = _seeded(self.setup_controller, use_proxy) if os.environ.get(SNAPS) and os.environ.get(SNAP_URL) else []
         try:
             return setup(self, *args, **kwargs)
         finally:

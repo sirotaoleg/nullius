@@ -34,6 +34,7 @@ import fcntl
 import glob
 import gzip
 import hashlib
+import http.server
 import importlib.util
 import io
 import json
@@ -130,6 +131,7 @@ SNAP_SECONDS = 1200
 SNAP_TRIES = 3
 SNAP_PAUSE = 10
 SNAP_ENV = "OSWORLD2_SNAPS"
+SNAP_URL = "OSWORLD2_SNAP_URL"
 GUEST_PORTS = {"082": (3000,)}
 MAILBOXES = {"001": ("task_001_thunderbird-profile_fixed.tar.gz",), "006": ("thunderbird-profile.tar.gz",),
              "010": ("email_010.tar.gz",)}
@@ -694,12 +696,7 @@ def _env(eid, assets=ASSETS, **extra):
     """GitLab's token only for a task that needs it."""
     return dict(os.environ, PYTHONPATH=os.pathsep.join([os.path.dirname(os.path.abspath(SITE)), UP]),
                 PYTHONIOENCODING="utf-8", OSWORLD_FILE_BASE_URL=assets, **websites.env(), **gitlab_server.env(eid),
-                **_snap_env(eid), **extra)
-
-
-def _snap_env(eid):
-    listed = os.path.join(_snap_cache(), f"{eid}.json")
-    return {SNAP_ENV: listed} if eid in SNAPS and os.path.exists(listed) else {}
+                **extra)
 
 
 def _assets(dir, eid):
@@ -1147,6 +1144,50 @@ def _snaps(eid):
               "them itself", file=sys.stderr, flush=True)
 
 
+def _snap_handler(files):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = files.get(self.path.lstrip("/"))
+            if path is None or not os.path.isfile(path):
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(os.path.getsize(path)))
+            self.end_headers()
+            with open(path, "rb") as f:
+                shutil.copyfileobj(f, self.wfile, 1 << 20)
+
+        def log_message(self, *a):
+            pass
+
+    return Handler
+
+
+@contextlib.contextmanager
+def _snap_served(eid):
+    """For the unit's life, the listed snaps by their sha3-384 alone, on the VMs' gateway at a free port; none, when
+    there is no list or no such address."""
+    listed = os.path.join(_snap_cache(), f"{eid}.json")
+    if eid not in SNAPS or not os.path.exists(listed):
+        yield {}
+        return
+    try:
+        with open(listed, encoding="utf-8") as f:
+            files = {s["sha3_384"]: s["file"] for s in json.load(f)}
+        server = http.server.ThreadingHTTPServer((_startup().GATEWAY, 0), _snap_handler(files))
+    except Exception as e:
+        print(f"task {eid}: its snaps are not served to the guest ({type(e).__name__}); the guest downloads them "
+              "itself", file=sys.stderr, flush=True)
+        yield {}
+        return
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield {SNAP_ENV: listed, SNAP_URL: f"http://{_startup().GATEWAY}:{server.server_address[1]}"}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def _vm(dir, domain, eid):
     """The unit's link to the VM image, which the provider mounts by its path: the reaper's mark."""
     image = _ready(domain, eid)
@@ -1241,7 +1282,8 @@ def _services(held, dir, domain, eid, until=None):
     ports = held.enter_context(_published(eid, closed))
     held.enter_context(websites.held(eid, websites.needed(eid), closed))
     held.enter_context(_gitlab(eid, dir, closed))
-    return dict(ports, **held.enter_context(proxy.held(dir, _task(dir, domain, eid)["proxy"], _disk)))
+    snaps = held.enter_context(_snap_served(eid))
+    return dict(ports, **snaps, **held.enter_context(proxy.held(dir, _task(dir, domain, eid)["proxy"], _disk)))
 
 
 @_letting_go
