@@ -765,7 +765,7 @@ def _base(url):
 
 
 def _graded(eid, judge):
-    """The LLM grader's settings from the run's judge route; a judged task with no route is refused before its VM starts."""
+    """The LLM grader's settings from the run's judge route; a judged task with no route is refused before it is scored."""
     if not judge:
         if eid in JUDGED:
             raise RuntimeError(f"task {eid} is scored by the LLM grader and this run gives it no judge route: "

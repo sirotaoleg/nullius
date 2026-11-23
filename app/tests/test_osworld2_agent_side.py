@@ -87,6 +87,23 @@ class Task(BaseTask):
 def get_task():
     return Task()
 '''
+GRADER_ERROR = '''import logging
+
+from desktop_env.task_base import BaseTask
+
+
+class Task(BaseTask):
+    id = "087"
+    instruction = "Say what the picture shows."
+
+    def evaluate(self, env):
+        logging.getLogger("desktopenv.env").error("Error in compare_text_with_llm: %s", "no answer")
+        return 0.0
+
+
+def get_task():
+    return Task()
+'''
 JUDGE = {"model": "judge-model", "base_url": "http://127.0.0.1:9/u-judge/v1", "key": "word"}
 UNIT = "tasks__901"
 CLICK = "pyautogui.click(10, 20, clicks=1, button='left')"
@@ -178,7 +195,7 @@ class AgentSide(unittest.TestCase):
         open(os.path.join(up, "desktop_env", "evaluators", "__init__.py"), "w").close()
         shutil.copyfile(os.path.join(OSWORLD2, "desktop_env", "evaluators", "errors.py"),
                         os.path.join(up, "desktop_env", "evaluators", "errors.py"))
-        for eid, text in (("901", ONE), ("902", PHASES), ("903", INFRA), ("003", JUDGED)):
+        for eid, text in (("901", ONE), ("902", PHASES), ("903", INFRA), ("003", JUDGED), ("087", GRADER_ERROR)):
             with open(os.path.join(classes, f"task_{eid}.py"), "w") as f:
                 f.write(text)
         self.image = os.path.join(self.tmp, "image.qcow2")
@@ -391,13 +408,16 @@ class AgentSide(unittest.TestCase):
             self.setup("tasks__024")
         self.assertFalse(os.path.exists(os.path.join(self.trial, ".work")))
 
-    def judged(self, judge):
-        s = self.session(self.setup("tasks__003"))
-        self.d.task_given(unit="tasks__003", dir=self.ws)
+    def ended(self, unit="tasks__003"):
+        s = self.session(self.setup(unit))
+        self.d.task_given(unit=unit, dir=self.ws)
         s.call("step", actions=[CLICK], end="done")
         s.close()
         time.sleep(1)
-        return self.d.score(unit="tasks__003", dir=self.ws, transcript=[], answer="", **judge)
+
+    def judged(self, judge, unit="tasks__003"):
+        self.ended(unit)
+        return self.d.score(unit=unit, dir=self.ws, transcript=[], answer="", **judge)
 
     def test_a_judged_task_is_scored_with_the_runs_judge_route(self):
         self.assertEqual(self.judged({"judge": JUDGE})["reward"], 1.0)
@@ -410,6 +430,19 @@ class AgentSide(unittest.TestCase):
         self.d.end(unit="tasks__003", dir=self.ws)
         self.assertTrue(gone(runner))
         self.assertFalse(self.events("evaluate"))
+
+    def test_a_judge_pipe_closed_with_nothing_ends_the_runner_unscored(self):
+        self.ended()
+        entry = self.d.RUNNERS[self.d._runner_dir(self.ws)]
+        os.close(entry["judge"])
+        entry["judge"] = None
+        self.assertTrue(gone(entry["p"].pid))
+        self.assertEqual(self.d._exited(entry["p"]), 1)
+        self.assertFalse(self.events("evaluate"))
+
+    def test_a_grader_error_in_the_runners_log_is_the_scores_error(self):
+        with self.assertRaisesRegex(self.d.VerifierError, "the LLM grader failed in compare_text_with_llm"):
+            self.judged({"judge": JUDGE}, "tasks__087")
 
     def test_a_judge_call_that_failed_is_the_scores_error(self):
         relay = os.path.join(self.trial, ".work", "relay")
