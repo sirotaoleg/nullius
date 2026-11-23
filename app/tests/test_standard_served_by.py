@@ -33,7 +33,7 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "sta
 APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PIN = {"order": ["prov-a", "prov-b/fp8"], "allow_fallbacks": False}
 KEY = "or-test-relay-key-0123456789"
-NEW = ("served_by", "end", "error")           # what the record's reply gains, beside what it held
+NEW = ("served_by", "end", "error", "refusal")  # what the record's reply gains, beside what it held
 
 
 def sse(*events) -> bytes:
@@ -260,6 +260,19 @@ class TheRelay(WithUpstream):
         self.assertEqual(relay.reply_facts("/chat/completions", b"[1, 2]", False), {})
         self.assertEqual(relay.reply_facts("/chat/completions", b"not json", False), {})
         self.assertEqual(relay.reply_facts("/chat/completions", b"data: [1]\n\ndata: {\"error\": 5}\n\n", True), {})
+
+    def test_a_refusals_stated_reason_is_kept_without_its_words(self):
+        details = {"type": "refusal", "category": "reasoning_extraction", "explanation": "words of the provider"}
+        body = dict(MESSAGES, stop_reason="refusal", stop_details=details, content=[])
+        self.assertEqual(relay.reply_facts("/messages", json.dumps(body).encode(), False),
+                         {"served_by": "Prov B", "end": "refusal", "refusal": {"type": "refusal", "category": "reasoning_extraction"}})
+        stream = sse({"type": "message_start", "message": {"type": "message", "provider": "Prov B"}},
+                     {"type": "message_delta", "delta": {"stop_reason": "refusal", "stop_details": details}})
+        self.assertEqual(relay.reply_facts("/messages", stream, True)["refusal"], {"type": "refusal", "category": "reasoning_extraction"})
+        for odd in (None, "cyber", {"category": 7}, {"explanation": "x"}):
+            with self.subTest(odd=odd):
+                said = relay.reply_facts("/messages", json.dumps(dict(body, stop_details=odd)).encode(), False)
+                self.assertEqual((said["end"], "refusal" in said), ("refusal", False))
 
     def test_a_failed_responses_stream_is_read_beside_its_facts(self):
         """The facts are read apart: a failed Responses stream's text, tool calls and usage are read from its
@@ -588,6 +601,18 @@ class TheRecord(unittest.TestCase):
         self.assertEqual(job.served([self.call("m-1", "Prov B", error={"message": "x"})], pin)["calls"], {})   # failed: not answered
         self.assertEqual(job.served([self.call("m-1", "Prov A")], None), {"calls": {"Prov A": 1}, "unnamed": 0})
         self.assertIsNone(job.served([self.call("m-1", status=429)], None))
+
+    def test_a_units_and_a_jobs_summary_count_the_models_refusals_by_category(self):
+        def refused(category=None):
+            c = self.call("m-1", "Prov A")
+            c["reply"].update({"end": "refusal", **({"refusal": {"category": category}} if category else {})})
+            return c
+        unit = job.served([self.call("m-1", "Prov A"), refused("reasoning_extraction"), refused("reasoning_extraction"), refused()])
+        self.assertEqual(unit["refusals"], {"calls": 3, "by_category": {"reasoning_extraction": 2, "unstated": 1}})
+        self.assertNotIn("refusals", job.served([self.call("m-1", "Prov A")]))
+        other = job.served([refused("cyber")])
+        self.assertEqual(job.served_total([{"standard": {"served": unit}}, {"standard": {"served": other}}])["refusals"],
+                         {"calls": 4, "by_category": {"cyber": 1, "reasoning_extraction": 2, "unstated": 1}})
 
     def test_a_name_reads_as_a_slug_by_its_case_and_spaces_alone(self):
         pin = {"m-1": ["prov-a"]}

@@ -431,8 +431,14 @@ def _status(resp) -> Optional[str]:
     return f"{resp['status']}: {why}" if why else resp["status"]
 
 
+def _refusal(details) -> Optional[dict]:
+    """A refusal's stated reason (Messages' ``stop_details``): its type and category, never its words."""
+    got = {k: details[k] for k in ("type", "category") if isinstance(details, dict) and _name(details.get(k))}
+    return got if got.get("category") else None
+
+
 def _facts(path: str, body: bytes, streamed: bool) -> dict:
-    served, end, error, ends, errors = None, None, None, {}, {}
+    served, end, error, ends, errors, refusal = None, None, None, {}, {}, None
     if not streamed:
         got = json.loads(body)
         if not isinstance(got, dict):
@@ -441,6 +447,7 @@ def _facts(path: str, body: bytes, streamed: bool) -> dict:
         _choices(got.get("choices"), ends, errors)
         if got.get("type") == "message":
             end = _name(got.get("stop_reason"))
+            refusal = _refusal(got.get("stop_details"))
         elif got.get("object") == "response" or "output" in got:
             end = _status(got)
     else:
@@ -462,6 +469,7 @@ def _facts(path: str, body: bytes, streamed: bool) -> dict:
                 error = error or _an_error(ev["error"])
             if kind == "message_delta" and isinstance(ev.get("delta"), dict):
                 end = _name(ev["delta"].get("stop_reason")) or end
+                refusal = _refusal(ev["delta"].get("stop_details")) or refusal
             if kind in ("response.completed", "response.done", "response.incomplete", "response.failed"):
                 resp = ev.get("response")
                 end = _status(resp) or end
@@ -472,14 +480,15 @@ def _facts(path: str, body: bytes, streamed: bool) -> dict:
     if error is None and errors:
         i = min(errors)
         error = dict(errors[i], choice=i)
-    return {k: v for k, v in (("served_by", served), ("end", end), ("error", error)) if v is not None}
+    return {k: v for k, v in (("served_by", served), ("end", end), ("error", error), ("refusal", refusal)) if v is not None}
 
 
 def reply_facts(path: str, body: bytes, streamed: bool) -> dict:
     """What a reply says besides what :func:`read_reply` reads, read apart from
     it: the serving provider that answered (``served_by``), how it ended
     (``end``: ``finish_reason``, ``stop_reason`` or a Responses status; one per
-    choice, by index, when there are several) and an error it holds though its
+    choice, by index, when there are several), a refusal's stated reason (``refusal``:
+    the type and category of Messages' ``stop_details``) and an error it holds though its
     status was a success (``error``: code, type and message; a top-level one
     whatever else the reply holds, else a choice's). A fact of the wrong type
     is left out, and a reply that cannot be read gives none: nothing here can

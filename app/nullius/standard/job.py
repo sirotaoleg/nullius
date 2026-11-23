@@ -434,7 +434,9 @@ def served(calls: List[dict], serving: Optional[Dict[str, List[str]]] = None) ->
     every answered call sent as that model names a provider that reads as one of its pinned slugs (``_named``,
     a slug's first part), ``unknown`` when one names none or another name, None when it has no answered call.
     A slug's endpoint variant (``/fp8``) is not in a reply's name: ``held`` says which provider answered, and
-    cannot tell one of its endpoints from another. None for a unit with no answered call in a run with no pin."""
+    cannot tell one of its endpoints from another. ``refusals``: the answered calls the model refused
+    (``reply.end`` ``refusal``), by stated category (``unstated`` when the reply gave none), when there were any.
+    None for a unit with no answered call in a run with no pin."""
     answered = [c for c in calls if c.get("status") == 200 and not (c.get("reply") or {}).get("error")]
     by: Dict[str, int] = {}
     unnamed = 0
@@ -447,6 +449,13 @@ def served(calls: List[dict], serving: Optional[Dict[str, List[str]]] = None) ->
     if not answered and not serving:
         return None
     out = {"calls": dict(sorted(by.items())), "unnamed": unnamed}
+    refused = [(c.get("reply") or {}) for c in answered if (c.get("reply") or {}).get("end") == "refusal"]
+    if refused:
+        cats: Dict[str, int] = {}
+        for r in refused:
+            cat = ((r.get("refusal") or {}).get("category") if isinstance(r.get("refusal"), dict) else None) or "unstated"
+            cats[cat] = cats.get(cat, 0) + 1
+        out["refusals"] = {"calls": len(refused), "by_category": dict(sorted(cats.items()))}
     if serving:
         held = {}
         for m, slugs in sorted(serving.items()):
@@ -469,6 +478,13 @@ def served_total(results: List[dict], also: Optional[dict] = None) -> Optional[d
         for name, n in (p.get("calls") or {}).items():
             calls[name] = calls.get(name, 0) + n
     out = {"calls": dict(sorted(calls.items())), "unnamed": sum(p.get("unnamed") or 0 for p in parts)}
+    refused = [p["refusals"] for p in parts if isinstance(p.get("refusals"), dict)]
+    if refused:
+        cats: Dict[str, int] = {}
+        for p in refused:
+            for cat, n in (p.get("by_category") or {}).items():
+                cats[cat] = cats.get(cat, 0) + n
+        out["refusals"] = {"calls": sum(p.get("calls") or 0 for p in refused), "by_category": dict(sorted(cats.items()))}
     models = sorted({m for p in parts for m in (p.get("held") or {})})
     if models:
         out["held"] = {}
