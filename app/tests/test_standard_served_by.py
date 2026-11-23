@@ -373,6 +373,7 @@ class TheRelay(WithUpstream):
                  (dict(model="anthropic/claude-x"), "/messages", {"type": "adaptive"}),
                  (dict(model="anthropic/claude-opus-4.6", openrouter=True), "/messages", {"type": "adaptive"}),
                  (dict(model="anthropic/claude-sonnet-4.6", openrouter=True), "/messages", {"type": "adaptive"}),
+                 (dict(model="anthropic/claude-opus-4-6", openrouter=True), "/messages", {"type": "adaptive"}),
                  (dict(model="anthropic/claude-x", openrouter=True), "/batches/messages", {"type": "adaptive"}))
         for kw, path, thinking in cases:
             with self.subTest(kw=kw, path=path, thinking=thinking):

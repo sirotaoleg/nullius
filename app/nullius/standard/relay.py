@@ -44,9 +44,9 @@ A run may pin, for a model, the serving providers that may answer it
 that model, in place of the caller's own, and records both, cleaned of
 credentials. Without a pin a request's body goes on as it did.
 
-On OpenRouter, a Messages request to an Anthropic model whose own API omits the thinking
-text by default (not the 4.6 ones), with adaptive ``thinking`` that names no ``display``,
-is sent with ``display: omitted``; the record says so.
+On OpenRouter, a Messages request to an Anthropic model other than the 4.6 ones (which
+return the thinking text by default on Anthropic's own API), with adaptive ``thinking`` that
+names no ``display``, is sent with ``display: omitted``; the record says so.
 
 One answer is the relay's own: a run with a spending cap (``ledger``) books
 each call before it goes out, and a call that does not fit is not sent. Its
@@ -436,7 +436,7 @@ def _status(resp) -> Optional[str]:
 
 
 _CODE = re.compile(r"[a-z0-9_]{1,64}")
-_OMITS_BY_DEFAULT = re.compile(r"anthropic/(?!.*-4\.6(?![0-9]))")
+_OMITS_BY_DEFAULT = re.compile(r"anthropic/(?!.*-4[.-]6(?![0-9]))")
 
 
 def _refusal(details) -> Optional[dict]:
@@ -715,9 +715,8 @@ class Relay:
         ``max_calls``: the most model calls the agent's own route of a unit
         may make (:func:`agent_route`), each answered call counted.
         ``openrouter``: ``base`` is OpenRouter's (by default when its host is): a Messages request to an
-        Anthropic model that omits the thinking text by default on its own API (not the 4.6 ones), whose
-        adaptive ``thinking`` names no ``display``, is sent with ``display: omitted``, and the record says so
-        (``thinking_display_added``)."""
+        Anthropic model other than the 4.6 ones, whose adaptive ``thinking`` names no ``display``, is sent
+        with ``display: omitted``, and the record says so (``thinking_display_added``)."""
         self.fields = fields
         self.max_calls = max_calls
         self.answered: Dict[str, int] = {}       # the calls each agent route had answered, for max_calls
