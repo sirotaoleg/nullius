@@ -356,6 +356,11 @@ class TheRelay(WithUpstream):
         self.assertEqual(r.calls("u0")[-1]["request"]["thinking_display_added"], "omitted")
         post(r.url("u0") + "/messages", dict(body_for("/messages", True), thinking={"type": "adaptive"}))
         self.assertEqual(self.sent()["thinking"], {"type": "adaptive", "display": "omitted"})
+        for model in ("anthropic/claude-sonnet-5.5", "anthropic/claude-opus-4.7", "anthropic/claude-opus-4.61"):
+            post(self.relay(model=model, openrouter=True).url("u0") + "/messages", body)
+            self.assertEqual(self.sent()["thinking"], {"type": "adaptive", "display": "omitted"}, model)
+        self.assertTrue(relay.Relay("https://openrouter.ai/api/v1", "k", os.path.join(self.tmp, "or")).openrouter)
+        self.assertFalse(relay.Relay("https://api.anthropic.com/v1", "k", os.path.join(self.tmp, "an")).openrouter)
 
     def test_a_thinking_display_is_left_as_it_came_everywhere_else(self):
         cases = ((dict(model="anthropic/claude-x", openrouter=True), "/messages", {"type": "adaptive", "display": "summarized"}),
@@ -365,7 +370,10 @@ class TheRelay(WithUpstream):
                  (dict(model="anthropic/claude-x", openrouter=True), "/messages", None),
                  (dict(model="minimax/minimax-m3", openrouter=True), "/messages", {"type": "adaptive"}),
                  (dict(model="anthropic/claude-x", openrouter=True), "/chat/completions", {"type": "adaptive"}),
-                 (dict(model="anthropic/claude-x"), "/messages", {"type": "adaptive"}))
+                 (dict(model="anthropic/claude-x"), "/messages", {"type": "adaptive"}),
+                 (dict(model="anthropic/claude-opus-4.6", openrouter=True), "/messages", {"type": "adaptive"}),
+                 (dict(model="anthropic/claude-sonnet-4.6", openrouter=True), "/messages", {"type": "adaptive"}),
+                 (dict(model="anthropic/claude-x", openrouter=True), "/batches/messages", {"type": "adaptive"}))
         for kw, path, thinking in cases:
             with self.subTest(kw=kw, path=path, thinking=thinking):
                 r = self.relay(**kw)

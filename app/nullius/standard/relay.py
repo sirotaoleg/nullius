@@ -42,9 +42,11 @@ A run may pin, for a model, the serving providers that may answer it
 (``serving``, OpenRouter's routing): the relay then puts
 ``provider: {order, allow_fallbacks: false}`` on every request it sends as
 that model, in place of the caller's own, and records both, cleaned of
-credentials. Without a pin a request's body goes on as it did, but for one field: on
-OpenRouter, a Messages request to an Anthropic model whose adaptive ``thinking`` names no
-``display`` gets ``display: omitted``, as Anthropic's own API would take it.
+credentials. Without a pin a request's body goes on as it did.
+
+On OpenRouter, a Messages request to an Anthropic model whose own API omits the thinking
+text by default (not the 4.6 ones), with adaptive ``thinking`` that names no ``display``,
+is sent with ``display: omitted``; the record says so.
 
 One answer is the relay's own: a run with a spending cap (``ledger``) books
 each call before it goes out, and a call that does not fit is not sent. Its
@@ -434,6 +436,7 @@ def _status(resp) -> Optional[str]:
 
 
 _CODE = re.compile(r"[a-z0-9_]{1,64}")
+_OMITS_BY_DEFAULT = re.compile(r"anthropic/(?!.*-4\.6(?![0-9]))")
 
 
 def _refusal(details) -> Optional[dict]:
@@ -712,15 +715,17 @@ class Relay:
         ``max_calls``: the most model calls the agent's own route of a unit
         may make (:func:`agent_route`), each answered call counted.
         ``openrouter``: ``base`` is OpenRouter's (by default when its host is): a Messages request to an
-        Anthropic model whose adaptive ``thinking`` names no ``display`` is sent with ``display: omitted``, the
-        default of Anthropic's own API, and the record says so (``thinking_display_added``)."""
+        Anthropic model that omits the thinking text by default on its own API (not the 4.6 ones), whose
+        adaptive ``thinking`` names no ``display``, is sent with ``display: omitted``, and the record says so
+        (``thinking_display_added``)."""
         self.fields = fields
         self.max_calls = max_calls
         self.answered: Dict[str, int] = {}       # the calls each agent route had answered, for max_calls
         self.serving = {m: list(s) for m, s in (serving or {}).items()}
         host = (urllib.parse.urlsplit(base).hostname or "").lower()
-        self.openrouter = (host == "openrouter.ai" or host.endswith(".openrouter.ai")) if openrouter is None else bool(openrouter)
-        self.facts = (host == "openrouter.ai" or host.endswith(".openrouter.ai")) if facts is None else bool(facts)
+        on_openrouter = host == "openrouter.ai" or host.endswith(".openrouter.ai")
+        self.openrouter = on_openrouter if openrouter is None else bool(openrouter)
+        self.facts = on_openrouter if facts is None else bool(facts)
         self.ledger = ledgers.Ledger(ledger) if ledger else None
         # False for the benchmark's own relay: its calls (an option's embeddings) are no one unit's, so only the run's cap holds them
         self.unit_caps = unit_caps
@@ -843,7 +848,7 @@ class Relay:
                 routing_asked = req.get("provider")
                 req["provider"] = routing(pinned)
             thinking = req.get("thinking")
-            if (self.openrouter and rest.split("?")[0].endswith("/messages") and str(req.get("model") or "").startswith("anthropic/")
+            if (self.openrouter and rest.split("?")[0] == "/messages" and _OMITS_BY_DEFAULT.match(str(req.get("model") or ""))
                     and isinstance(thinking, dict) and thinking.get("type") == "adaptive" and "display" not in thinking):
                 req["thinking"] = dict(thinking, display="omitted")
                 display_added = True
