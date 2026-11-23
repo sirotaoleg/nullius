@@ -46,8 +46,8 @@ ORDER = [
     FAILED_VERIFICATION,
     PATCH_NOT_APPLIED,
     NO_PATCH,
-    NO_PORT,
     UNSUPPORTED,
+    NO_PORT,
     AGENT_ERROR,
     RATE_LIMITED,
     API_ERROR,
@@ -205,7 +205,7 @@ def from_verdict(exception_type, verdict):
             return CANCELLED
         if et == "noporterror":
             return NO_PORT
-        if et == "unsupportederror":
+        if et == "portnotcarriederror":
             return UNSUPPORTED
         if et == _CAP_EXCEPTION:
             return SPENDING_CAP

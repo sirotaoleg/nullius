@@ -94,18 +94,22 @@ class NoPort(unittest.TestCase):
         self.assertEqual((tried.has_verdicts, tried.rate), (False, 0.0))
 
     def test_on_a_pass_benchmark_it_stays_in_the_adjusted_rate(self):
-        job, trials = self.go(self.agent_def(), kind="pass", reward=1.0)
-        self.assertEqual(trials["b__u0001"]["verifier_result"]["rewards"], {"reward": 0.0})
-        j = parse.parse_job(job)
-        self.assertEqual((j.raw_solve_rate, j.adjusted_solve_rate), (0.5, 0.5))
+        for proven in (False, True):
+            with self.subTest(proven=proven):
+                job, trials = self.go(self.agent_def(proven), kind="pass", reward=1.0)
+                self.assertEqual(trials["b__u0001"]["verifier_result"]["rewards"], {"reward": 0.0})
+                j = parse.parse_job(job)
+                self.assertEqual((j.raw_solve_rate, j.adjusted_solve_rate), (0.5, 0.5))
 
     def test_repeated_it_counts_as_failed_attempts(self):
-        job, trials = self.go(self.agent_def(), kind="pass", reward=1.0, repeat=2)
-        self.assertEqual(sorted(t["standard"]["unit"] for t in trials.values()), ["a", "a", "b", "b"])
-        with open(os.path.join(job, "result.json")) as f:
-            hat = json.load(f)["pass_hat_k"]
-        self.assertEqual((hat["units"], hat["1"]), (2, 0.5))
-        self.assertEqual(attempts.for_job(parse.parse_job(job))["hat"][1], 0.5)
+        for proven in (False, True):
+            with self.subTest(proven=proven):
+                job, trials = self.go(self.agent_def(proven), kind="pass", reward=1.0, repeat=2)
+                self.assertEqual(sorted(t["standard"]["unit"] for t in trials.values()), ["a", "a", "b", "b"])
+                with open(os.path.join(job, "result.json")) as f:
+                    hat = json.load(f)["pass_hat_k"]
+                self.assertEqual((hat["units"], hat["1"]), (2, 0.5))
+                self.assertEqual(attempts.for_job(parse.parse_job(job))["hat"][1], 0.5)
 
     def test_an_agent_with_the_port_scores_0_where_the_benchmark_does_not_carry_it(self):
         job, trials = self.go(self.agent_def(proven=True))
@@ -117,6 +121,7 @@ class NoPort(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(job, "b__u0001", "agent", "trajectory.json")))
         with open(os.path.join(job, "result.json")) as f:
             self.assertEqual(json.load(f)["stats"]["n_errored_trials"], 0)
+        self.assertEqual(merge.result_of([{"result": {"n_total_trials": 2}, "trials": []}], list(trials.values()))["stats"]["n_errored_trials"], 0)
         j = parse.parse_job(job)
         self.assertEqual(({t.task_base: t.outcome for t in j.trials}["b"], j.n_infra, j.mean_score), (classify.UNSUPPORTED, 0, 0.25))
         self.assertEqual(attempts.Attempts(tuple(t for t in j.trials if t.task_base == "b")).has_verdicts, False)
@@ -168,6 +173,10 @@ class OSWorld2Units(unittest.TestCase):
             with self.subTest(agent=key):
                 self.assertEqual(r.no_port("tasks__024")[0], outcome)
                 self.assertIsNone(r.no_port("tasks__001"))
+        for own in definitions.benchmark_agents([osw2]):
+            r.other = own
+            with self.subTest(agent=own["key"]):
+                self.assertIsNone(r.no_port("tasks__024"))
 
 
 if __name__ == "__main__":

@@ -621,7 +621,7 @@ def write_config(job_dir: str, *, job: str, bench: dict, other: dict, model: str
 _INFRA = ("Setup", "Verifier", "Api", "RateLimit", "Environment", "Docker", "Build", "Connection", "Network", "Authentication",
           "ModelNotFound")
 NO_PORT = "NoPortError"
-UNSUPPORTED = "UnsupportedError"
+UNSUPPORTED = "PortNotCarriedError"
 NOT_RUN = (NO_PORT, UNSUPPORTED)
 
 
