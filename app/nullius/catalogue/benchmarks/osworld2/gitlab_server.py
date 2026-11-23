@@ -232,7 +232,7 @@ def _json(said, what):
         raise GitLabError(f"{what} answered no JSON") from None
 
 
-def ready(value, token, runner=False):
+def ready(value, token, runner=False, name=None):
     """GitLab's sign-in page, the root token as an administrator's and, with ``runner``, an online runner."""
     host = urllib.parse.urlsplit(value).hostname
     if not websites._resolves(host):
@@ -242,7 +242,7 @@ def ready(value, token, runner=False):
     said = _request("/api/v4/user", value, token)
     if said[0] != 200 or _json(said, f"{value}/api/v4/user").get("is_admin") is not True:
         raise GitLabError(f"{value}/api/v4/user answered {said[0]} for the token {TOKEN}, or not as an "
-                          f"administrator's: docker volume rm {SNAPSHOT}, and GitLab is made anew")
+                          f"administrator's" + (f": docker volume rm {name}, and GitLab is made anew" if name else ""))
     if runner:
         said = _request("/api/v4/runners/all?type=instance_type&status=online", value, token)
         if said[0] != 200 or not _json(said, f"{value}/api/v4/runners/all"):
@@ -507,7 +507,7 @@ def _register(stack, value):
     return made["id"]
 
 
-def _copy(stack, settings, tar, keep, name=SNAPSHOT):
+def _copy(stack, settings, tar, keep, name):
     """``tar`` in a container of the project's, under GitLab's write limit; ``keep`` writes the snapshot."""
     image = _done(compose(stack, ["config", "--images"]), "reading the images").stdout.split()
     gitlab = next(i for i in image if i.startswith("gitlab/gitlab-ce"))
@@ -554,7 +554,7 @@ def init(stack, say=None, closed=None, limits=None):
     _done(compose(stack, ["up", "-d", "--pull", "never", "gitlab"], limits=limits), "starting GitLab")
     say(json.dumps({"started": "gitlab", "up_s": _until(START_SECONDS, "GitLab", lambda: _signed_in(value), closed)}))
     _make_token(stack)
-    ready(value, said)
+    ready(value, said, name=name)
     say(json.dumps({"token": "made", "s": round(time.time() - t0)}))
     _done(compose(stack, ["up", "-d", "--pull", "never", "dind", "gitlab-runner"], limits=limits), "starting the runner")
     runner = _register(stack, value)
@@ -589,7 +589,7 @@ def up(stack, limits=None, closed=None, say=None):
     if say:
         say(json.dumps({"restored_s": round(time.time() - t0)}))
     _done(compose(stack, ["start"], limits=limits), "starting GitLab")
-    _until(START_SECONDS, "GitLab", lambda: ready(value, said, runner=True), closed)
+    _until(START_SECONDS, "GitLab", lambda: ready(value, said, runner=True, name=name), closed)
     _from_vms(settings["OSWORLD2_GITLAB_HOST"])
     return {"url": value, "up_s": round(time.time() - t0)}
 

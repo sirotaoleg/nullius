@@ -215,6 +215,20 @@ class Ready(Case):
             self.assertIn("GITLAB_PRIVATE_TOKEN", str(raised.exception))
             self.assertNotIn(token, str(raised.exception))
 
+    def test_a_refused_token_names_only_the_snapshot_in_use(self):
+        Lab.admin = False
+        own = self.g.SNAPSHOT + "-0123456789ab"
+        for name in (None, own, self.g.SNAPSHOT):
+            with self.subTest(name=name), self.assertRaises(self.g.GitLabError) as raised:
+                self.g.ready(URL, TOKEN, name=name)
+            said = str(raised.exception)
+            if name is None:
+                self.assertNotIn("volume rm", said)
+            else:
+                self.assertIn(f"docker volume rm {name},", said)
+            if name == own:
+                self.assertNotIn(f"docker volume rm {self.g.SNAPSHOT},", said)
+
     def test_no_runner_online_fails_only_where_one_is_needed(self):
         Lab.runners = []
         self.assertEqual(self.g.ready(URL, TOKEN), URL)
@@ -609,10 +623,16 @@ class Lifecycle(unittest.TestCase):
     def test_the_copy_runs_under_gitlab_s_limit_with_its_labels(self):
         settings = {"OSWORLD2_GITLAB_DISK": "/dev/sda", "OSWORLD2_GITLAB_GITLAB_BPS": "6291456",
                     "OSWORLD2_GITLAB_GITLAB_IOPS": "60", "OSWORLD2_GITLAB_SHARE": "unit"}
+        own = self.g._own(self.stack)
         with mock.patch.object(self.g, "compose", lambda *a, **kw: Fake(stdout="gitlab/gitlab-ce@sha256:x\n")):
-            self.g._copy(self.stack, settings, "tar -x", keep=False)
-            self.g._copy(self.stack, settings, "tar -c", keep=True)
-        restore, keep = [a for a, _ in self.calls]
+            self.g._copy(self.stack, settings, "tar -x", keep=False, name=self.g.SNAPSHOT)
+            self.g._copy(self.stack, settings, "tar -c", keep=True, name=self.g.SNAPSHOT)
+            self.g._copy(self.stack, settings, "tar -x", keep=False, name=own)
+            self.g._copy(self.stack, settings, "tar -c", keep=True, name=own)
+        restore, keep, own_restore, own_keep = [a for a, _ in self.calls]
+        self.assertIn(f"{own}:/snapshot:ro", own_restore)
+        self.assertIn(f"{own}:/snapshot", own_keep)
+        self.assertNotIn(f"{self.g.SNAPSHOT}:/snapshot", own_keep)
         for flag in ("--network none", "--label com.docker.compose.project=osworld2-gitlab",
                      "--label nullius.osworld2.share=unit", "--device-write-bps /dev/sda:6291456",
                      "--device-write-iops /dev/sda:60"):
@@ -833,6 +853,24 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(self.g.init(self.stack)["snapshot"], own)
         self.assertEqual(copied, [(True, own)])
         self.assertEqual([a for a, _ in self.calls], [("volume", "create", own)])
+
+    def test_up_restores_the_snapshot_this_stack_s_stamp_names(self):
+        self.configure()
+        own = self.g._own(self.stack)
+        stamp = self.g._stamp(self.stack, URL)
+        for made, name in ((stamp, self.g.SNAPSHOT), ("another install's stamp", own)):
+            looked, copied = [], []
+            for fn, fake in (("_made", lambda *a: made), ("compose", lambda *a, **kw: Fake()),
+                             ("_snapshot", lambda name=self.g.SNAPSHOT: looked.append(name) or True),
+                             ("_copy", lambda stack, settings, tar, keep, name: copied.append((keep, name))),
+                             ("_until", lambda *a, **kw: 1), ("_from_vms", lambda host: None)):
+                p = mock.patch.object(self.g, fn, fake)
+                p.start()
+                self.addCleanup(p.stop)
+            with self.subTest(made=made):
+                self.g.up(self.stack)
+                self.assertEqual(looked, [name])
+                self.assertEqual(copied, [(False, name)])
 
     def test_a_snapshot_that_cannot_be_read_is_kept(self):
         def fail(*a):
