@@ -620,6 +620,7 @@ def write_config(job_dir: str, *, job: str, bench: dict, other: dict, model: str
 #: an error kind naming the machine or the benchmark's side rather than the agent: the live board's infra_error
 _INFRA = ("Setup", "Verifier", "Api", "RateLimit", "Environment", "Docker", "Build", "Connection", "Network", "Authentication",
           "ModelNotFound")
+NO_PORT = "NoPortError"
 
 
 FEED_PHASES = (("env_setup", "environment_setup"), ("agent_setup", "agent_setup"), ("agent_run", "agent_execution"), ("verify", "verifier"))
@@ -643,7 +644,7 @@ def feed_outcome(kind: str, score: Optional[dict], exception: Optional[tuple]) -
     kind as evidence. A unit the run's spending cap cut off (``ledger.ERROR``)
     is the feed's ``budget``."""
     score = score or {}
-    if exception:
+    if exception and exception[0] != NO_PORT:
         k = exception[0]
         return {"outcome": "cancelled" if k == "CancelledError" else "budget" if k == ledger.ERROR else "timeout" if "Timeout" in k else "infra_error" if any(w in k for w in _INFRA) else "agent_error",
                 "exc": k, "evidence": (exception[1] or k)[:200]}

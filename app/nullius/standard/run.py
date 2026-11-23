@@ -863,8 +863,10 @@ class Run:
             p.emit("refused", detail=str(e))
             raise
         try:
-            units = self.driver().request("units", dataset=self.ds["id"], timeout=300,
-                                          **({"setup": self.other["key"]} if self.upstream else {}))["units"]
+            listing = self.driver().request("units", dataset=self.ds["id"], timeout=300,
+                                            **({"setup": self.other["key"]} if self.upstream else {}))
+            units = listing["units"]
+            self.unit_needs = listing.get("needs") if isinstance(listing.get("needs"), dict) else {}
         except BaseException:
             for driver in self.drivers:
                 driver.close()
@@ -1347,6 +1349,13 @@ class Run:
                         d.close()
                         self.local.driver = None
 
+    def no_port(self, unit: str) -> str:
+        needs = (getattr(self, "unit_needs", None) or {}).get(unit)
+        if self.other.get("_kind") != "agent" or not isinstance(needs, list) or not needs:
+            return ""
+        why = match.fit(dict(self.bench, needs=[str(p) for p in needs], needs_skills={}), self.other)
+        return "not run: " + "; ".join(why) if why else ""
+
     def _unit(self, i: int, unit: str, r: int = 1, retry: int = 0) -> Optional[dict]:
         if self._stopped.is_set() or (getattr(self, "_halt", None) is not None and self._halt.is_set()):
             return None                          # the endpoint refused the run: nothing more is begun
@@ -1381,6 +1390,10 @@ class Run:
         image, finished = None, False            # its own image; whether it ended, or was broken off (a Stop)
         retry_ok = True                          # whether its failure is one a further try may mend
         try:
+            missing = self.no_port(unit)
+            if missing:
+                score = {"reward": 0.0, "detail": missing}
+                raise _Ended(job.NO_PORT, missing, retryable=False)
             try:
                 # a setup's unit needs none: the upstream's answerer reads its data itself. The unit is set up
                 # once its request is written: a stop before that leaves the driver nothing to end

@@ -30,6 +30,7 @@ SETUP_ERROR = "setup_error"
 SPENDING_CAP = "spending_cap"
 CANCELLED = "cancelled"
 AGENT_ERROR = "agent_error"
+NO_PORT = "no_port"
 UNKNOWN = "unknown"
 
 # Outcomes excluded from the adjusted rate: infrastructure failures or
@@ -43,6 +44,7 @@ ORDER = [
     FAILED_VERIFICATION,
     PATCH_NOT_APPLIED,
     NO_PATCH,
+    NO_PORT,
     AGENT_ERROR,
     RATE_LIMITED,
     API_ERROR,
@@ -101,6 +103,7 @@ LABELS = {
     FAILED_VERIFICATION: "Failed verification",
     PATCH_NOT_APPLIED: "Patch did not apply",
     NO_PATCH: "No patch produced",
+    NO_PORT: "Missing port",
     AGENT_ERROR: "Agent error",
     RATE_LIMITED: "Rate limited",
     API_ERROR: "API error",
@@ -135,6 +138,10 @@ DESCRIPTIONS = {
         "context lines or edits against the wrong revision."
     ),
     NO_PATCH: "The agent finished without producing a patch at all.",
+    NO_PORT: (
+        "The task needs a port the agent has not proven, such as a conversation with a "
+        "simulated user, so it was not run. Scored 0 and counted against the agent."
+    ),
     AGENT_ERROR: (
         "The agent itself failed — it timed out, filled its context, truncated its "
         "own output, refused, spent its own spending cap, or its process exited non-zero. Counted against the "
@@ -188,6 +195,8 @@ def from_verdict(exception_type, verdict):
         et = exception_type.lower().rpartition(".")[2]  # tolerate dotted paths
         if et == "cancellederror":
             return CANCELLED
+        if et == "noporterror":
+            return NO_PORT
         if et == _CAP_EXCEPTION:
             return SPENDING_CAP
         # Rate limiting first: it is an Api* class too, but common enough to be

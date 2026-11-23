@@ -81,7 +81,7 @@ Live view.
 
 ### Read the evidence
 
-A failure is the agent's (failed tests, no patch, an agent error), never reached it (rate limits, API and setup errors; the adjusted rate leaves them out), unknown (kept in the denominator), or the benchmark's, when a control finds the task broken. A trial opens into the verifier's report, the trace, the conversation and, with a judge key, a judge model's answers.
+A failure is the agent's (failed tests, no patch, an agent error, a port it has not proven), never reached it (rate limits, API and setup errors; the adjusted rate leaves them out), unknown (kept in the denominator), or the benchmark's, when a control finds the task broken. A trial opens into the verifier's report, the trace, the conversation and, with a judge key, a judge model's answers.
 
 <img src="docs/assets/nullius/readme/evidence.svg" alt="One trial opens into verifier results, model calls and timing, agent messages and tool use, and output files. A coloured dot follows each of the four evidence branches." width="800">
 

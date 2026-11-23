@@ -158,7 +158,7 @@ How the agent worked, not whether it won. Computed over layer 3.
 
 | Field | What it is | Source | Works on |
 | --- | --- | --- | --- |
-| `outcome` | One of thirteen classes: from the exception if there was one, else from the verifier's verdict. Full vocabulary below. | inferred | mixed |
+| `outcome` | One of fourteen classes: from the exception if there was one, else from the verifier's verdict. Full vocabulary below. | inferred | mixed |
 | `score · n_parts` | A graded score the benchmark gave, and how many parts it averages. With no reward and no exception, the outcome is *Scored*. | measured | mixed |
 | `reward` | The verifier's raw reward. Where no report says more, 1.0 or above is a solve. | measured | any |
 | `f2p_pass / f2p_fail` | Checks that had to start passing: SWE-bench's FAIL_TO_PASS, or every test of a Terminal-Bench task. | measured | mixed |
@@ -241,7 +241,7 @@ Computed here over the trajectory's tool calls, when present. They describe cond
 
 ## Outcome vocabulary {#outcomes}
 
-Thirteen classes. The five marked **yes** under Infrastructure leave the adjusted solve rate's denominator.
+Fourteen classes. The five marked **yes** under Infrastructure leave the adjusted solve rate's denominator.
 
 | Outcome | Label | Infrastructure | Meaning |
 | --- | --- | --- | --- |
@@ -251,6 +251,7 @@ Thirteen classes. The five marked **yes** under Infrastructure leave the adjuste
 | `failed_verification` | Failed verification | no | The verifier said no, on a benchmark with no patch detail: Terminal-Bench, or one read only by its reward. |
 | `patch_not_applied` | Patch did not apply | no | Malformed context lines, or edits against the wrong revision. |
 | `no_patch` | No patch produced | no | Finished without changing anything. |
+| `no_port` | Missing port | no | The unit needs a port the agent has not proven, so it was not run. Scored 0, counted against the agent. |
 | `agent_error` | Agent error | no | Timed out, filled its context, truncated its output, refused, exited non-zero, reached its own spending cap or its cap on model calls. A result, counted against the agent. |
 | `rate_limited` | Rate limited | yes | An HTTP 429 ended the trial. A standard unit that passed keeps its pass. |
 | `api_error` | API error | yes | Any other provider failure: overloaded, unreachable, out of quota, key rejected. A standard unit that passed keeps its pass. |

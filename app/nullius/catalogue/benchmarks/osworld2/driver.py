@@ -113,6 +113,7 @@ LISTS = {
 LISTS["websites98"] = sorted(LISTS["no_services63"] + LISTS["websites35"])
 JUDGED = frozenset("003 007 008 019 025 031 035 041 070 074 075 077 078 079 081 082 087 089 090 092 093".split())
 ASKS_USER = frozenset("007 024 026 034 095 098".split())
+CONVERSATION = ASKS_USER | {"069"}
 RETRIES_SITE_READS = frozenset({"069"})
 HEAVY_WRITES = {"093": (24, 240), "108": (16, 160)}
 FREECAD = frozenset({"103", "104"})
@@ -200,10 +201,14 @@ def units(dataset=None, setup=None):
         name = os.environ.get("NULLIUS_DATASET_ID") or dataset or ""
         if name not in LISTS:
             raise RuntimeError(f"no tasks file for the dataset {name or '(none)'}, and no list of its own")
-        return {"units": [f"tasks__{e}" for e in LISTS[name]]}
+        return _listed([f"tasks__{e}" for e in LISTS[name]])
     with open(os.environ["NULLIUS_DATASET"], encoding="utf-8") as f:
         meta = json.load(f)
-    return {"units": [f"{d}__{e}" for d, ids in meta.items() for e in ids]}
+    return _listed([f"{d}__{e}" for d, ids in meta.items() for e in ids])
+
+
+def _listed(ids):
+    return {"units": ids, "needs": {u: ["agent.conversation/v1"] for u in ids if u.rpartition("__")[2] in CONVERSATION}}
 
 
 def _task_file(domain, eid):
