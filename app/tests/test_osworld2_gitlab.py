@@ -676,7 +676,7 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(given, [fds])
 
     def test_the_stamp_is_read_from_the_snapshot_read_only(self):
-        with mock.patch.object(self.g, "_snapshot", lambda: True):
+        with mock.patch.object(self.g, "_snapshot", lambda *a: True):
             with mock.patch.object(self.g, "_docker",
                                    lambda *a, **kw: self.calls.append(a) or Fake(stdout=f"abc {int(time.time())}")):
                 self.assertEqual(self.g._made(), "abc")
@@ -702,7 +702,7 @@ class Lifecycle(unittest.TestCase):
             with mock.patch.object(self.g, "_docker", lambda *a, **kw: Fake(1, stderr="Cannot connect\n")), \
                     self.assertRaises(self.g.GitLabError):
                 self.g._made()
-        with mock.patch.object(self.g, "_snapshot", lambda: False):
+        with mock.patch.object(self.g, "_snapshot", lambda *a: False):
             self.assertIsNone(self.g._made())
         for said in ("Error response from daemon: get x: no such volume\n", "Error: No such volume: x\n"):
             with mock.patch.object(self.g, "_docker", lambda *a, **kw: Fake(1, stderr=said)):
@@ -716,8 +716,8 @@ class Lifecycle(unittest.TestCase):
         copied = []
         for name, fake in (("compose", lambda *a, **kw: Fake()), ("_until", lambda *a, **kw: 1),
                            ("_make_token", lambda stack: None), ("ready", lambda *a, **kw: URL),
-                           ("_register", lambda stack, value: 7), ("_volumes", lambda: []), ("_snapshot", lambda: False),
-                           ("_copy", lambda stack, settings, tar, keep: copied.append(tar))):
+                           ("_register", lambda stack, value: 7), ("_volumes", lambda: []), ("_snapshot", lambda *a: False),
+                           ("_copy", lambda stack, settings, tar, keep, **kw: copied.append(tar))):
             p = mock.patch.object(self.g, name, fake)
             p.start()
             self.addCleanup(p.stop)
@@ -733,8 +733,8 @@ class Lifecycle(unittest.TestCase):
         for name, fake in (("compose", lambda stack, args, **kw: given.append(kw.get("limits")) or Fake()),
                            ("_until", lambda *a, **kw: 1), ("_make_token", lambda stack: None),
                            ("ready", lambda *a, **kw: URL), ("_register", lambda stack, value: 7),
-                           ("_volumes", lambda: []), ("_snapshot", lambda: False),
-                           ("_copy", lambda stack, settings, tar, keep: copied.append(settings))):
+                           ("_volumes", lambda: []), ("_snapshot", lambda *a: False),
+                           ("_copy", lambda stack, settings, tar, keep, **kw: copied.append(settings))):
             p = mock.patch.object(self.g, name, fake)
             p.start()
             self.addCleanup(p.stop)
@@ -750,23 +750,23 @@ class Lifecycle(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         stamp = self.g._stamp(self.stack, URL)
-        with mock.patch.object(self.g, "_made", lambda: stamp):
+        with mock.patch.object(self.g, "_made", lambda *a: stamp):
             self.assertEqual(self.g.prepare(self.stack, {SITES: SUFFIX}), self.stack)
             self.assertEqual(done, [])
         for made, environ in ((None, {SITES: SUFFIX}), ("other", {SITES: SUFFIX}),
                               (stamp, {SITES: "10.0.0.1.nip.io"})):
             done.clear()
-            with self.subTest(made=made, environ=environ), mock.patch.object(self.g, "_made", lambda: made), \
-                    mock.patch.object(self.g, "_snapshot", lambda: True):
+            with self.subTest(made=made, environ=environ), mock.patch.object(self.g, "_made", lambda *a: made), \
+                    mock.patch.object(self.g, "_snapshot", lambda *a: True):
                 self.g.prepare(self.stack, environ)
                 self.assertEqual(done, ["_clone", "configure", "compose", "down", "init"])
 
     def test_made_anew_in_order_under_the_run_s_share(self):
         order = []
-        for name, fake in (("_made", lambda: None), ("_clone", lambda stack: order.append("clone")),
+        for name, fake in (("_made", lambda *a: None), ("_clone", lambda stack: order.append("clone")),
                            ("configure", lambda *a: order.append(("configure",) + a[1:])),
                            ("compose", lambda stack, args, **kw: order.append(args[0]) or Fake()),
-                           ("down", lambda stack: order.append("down")), ("_snapshot", lambda: True),
+                           ("down", lambda stack: order.append("down")), ("_snapshot", lambda *a: True),
                            ("init", lambda stack, say, closed, limits: order.append(("init", limits)))):
             p = mock.patch.object(self.g, name, fake)
             p.start()
@@ -775,12 +775,67 @@ class Lifecycle(unittest.TestCase):
         self.g.prepare(self.stack, {SITES: SUFFIX}, limits="/unit/gitlab.limits")
         self.assertEqual(order, ["clone", ("configure", SUFFIX, 16, 160), "pull", "down", ("init", None),
                                  "clone", ("configure", SUFFIX, 16, 160), "pull", "down", ("init", "/unit/gitlab.limits")])
-        self.assertEqual([a for a, _ in self.calls], [("volume", "rm", self.g.SNAPSHOT)] * 2)
+        self.assertEqual([a for a, _ in self.calls], [("volume", "rm", self.g._own(self.stack))] * 2)
         with self.assertRaises(self.g.GitLabError):
             self.g.prepare(self.stack, {})
 
+    def test_prepare_never_removes_the_machine_s_snapshot(self):
+        self.configure()
+        for name in ("_clone", "configure", "compose", "down", "init"):
+            p = mock.patch.object(self.g, name, lambda *a, **kw: Fake())
+            p.start()
+            self.addCleanup(p.stop)
+        for made in (None, "another install's stamp"):
+            with self.subTest(made=made), mock.patch.object(self.g, "_made", lambda *a: made), \
+                    mock.patch.object(self.g, "_snapshot", lambda *a: True):
+                self.g.prepare(self.stack, {SITES: SUFFIX})
+        self.assertTrue(self.calls)
+        self.assertNotIn(("volume", "rm", self.g.SNAPSHOT), [a for a, _ in self.calls])
+
+    def test_another_install_makes_its_own_snapshot_beside_the_machine_s(self):
+        self.configure()
+        own = self.g._own(self.stack)
+        made = {self.g.SNAPSHOT: "another install's stamp", own: None}
+        done = []
+        for name in ("_clone", "configure", "compose", "down"):
+            p = mock.patch.object(self.g, name, lambda *a, n=name, **kw: done.append(n) or Fake())
+            p.start()
+            self.addCleanup(p.stop)
+        with mock.patch.object(self.g, "_made", lambda name=self.g.SNAPSHOT: made[name]), \
+                mock.patch.object(self.g, "_snapshot", lambda name=self.g.SNAPSHOT: True), \
+                mock.patch.object(self.g, "init", lambda stack, *a, **kw: done.append("init")):
+            self.g.prepare(self.stack, {SITES: SUFFIX})
+            made[own] = self.g._stamp(self.stack, URL)
+            self.g.prepare(self.stack, {SITES: SUFFIX})
+        self.assertEqual(done, ["_clone", "configure", "compose", "down", "init"])
+        self.assertEqual([a for a, _ in self.calls], [("volume", "rm", own)])
+        self.assertNotIn(("volume", "rm", self.g.SNAPSHOT), [a for a, _ in self.calls])
+
+    def test_the_snapshot_s_name_is_the_machine_s_while_it_was_made_here_else_the_stack_s_own(self):
+        self.configure()
+        own = self.g._own(self.stack)
+        self.assertEqual(own, self.g._own(os.path.join(self.stack, ".")))
+        self.assertTrue(own.startswith(self.g.SNAPSHOT + "-"))
+        self.assertNotEqual(own, self.g._own(self.stack + "-other"))
+        stamp = self.g._stamp(self.stack, URL)
+        for made, name in ((stamp, self.g.SNAPSHOT), ("another install's stamp", own), (None, own)):
+            with self.subTest(made=made), mock.patch.object(self.g, "_made", lambda *a: made):
+                self.assertEqual(self.g._name(self.stack, URL), name)
+        copied = []
+        for name, fake in (("compose", lambda *a, **kw: Fake()), ("_until", lambda *a, **kw: 1),
+                           ("_make_token", lambda stack: None), ("ready", lambda *a, **kw: URL),
+                           ("_register", lambda stack, value: 7), ("_volumes", lambda: []),
+                           ("_snapshot", lambda name=self.g.SNAPSHOT: name == self.g.SNAPSHOT),
+                           ("_copy", lambda stack, settings, tar, keep, name=self.g.SNAPSHOT: copied.append((keep, name)))):
+            p = mock.patch.object(self.g, name, fake)
+            p.start()
+            self.addCleanup(p.stop)
+        self.assertEqual(self.g.init(self.stack)["snapshot"], own)
+        self.assertEqual(copied, [(True, own)])
+        self.assertEqual([a for a, _ in self.calls], [("volume", "create", own)])
+
     def test_a_snapshot_that_cannot_be_read_is_kept(self):
-        def fail():
+        def fail(*a):
             raise self.g.GitLabError("docker volume got no answer in 300 s")
         done = []
         for name in ("_clone", "configure", "compose", "down", "init"):

@@ -35,7 +35,7 @@ All 108 tasks of release `osworld-v2.1` run on the docker provider, but 103 and 
 | --- | --- |
 | 63, No hosted services | The VM and the gated assets; 27 of them also the LLM grader, the simulated user or the public internet |
 | 35, Mock website tasks | The mock websites, step 8; Overleaf keeps one account for all, so its 2 tasks run one at a time, each on Overleaf started anew, a few minutes more |
-| 2, tasks 026 and 041 | The mock websites, step 8, which serve the GitLab that Nullius makes on this machine before the first of them, about 8 minutes once; they run one at a time, each starting GitLab anew from its snapshot, about 5 minutes more |
+| 2, tasks 026 and 041 | The mock websites, step 8, which serve the GitLab that Nullius makes on this machine before the first of them, about 8 minutes once per installation of Nullius; they run one at a time, each starting GitLab anew from its snapshot, about 5 minutes more |
 | 8 that ask for a proxy | The proxy image, step 7, and for some the mock websites |
 
 103 and 104 are not supported: they are scored with FreeCAD on this machine, which Nullius does not install. Without `freecadcmd`, `FreeCADCmd`, `freecad` or `freecad.cmd` on the driver's PATH, the null control scores them 0, and an agent's or the Original setup's unit is refused before its VM starts.

@@ -142,17 +142,26 @@ def _stamp(stack, value):
     return hashlib.sha256(f"{stack}\n{value}\n{token(stack)}\n{_override()}\n{RB}".encode()).hexdigest()
 
 
-def _made():
+def _own(stack):
+    return f"{SNAPSHOT}-{hashlib.sha256(os.path.abspath(stack).encode()).hexdigest()[:12]}"
+
+
+def _name(stack, value):
+    """The machine's snapshot while it was made for this stack, host and token, else the stack's own beside it."""
+    return SNAPSHOT if _made() == _stamp(stack, value) else _own(stack)
+
+
+def _made(name=SNAPSHOT):
     """The stamp init left in the snapshot, read read-only; None without one, or once the token is TOKEN_DAYS
     old, since the upstream's token step makes it for a year."""
     image = GITLAB_IMAGE.search(_override())
-    if not _snapshot() or not image or not _found(_docker("image", "inspect", image.group(1)), "no such image",
+    if not _snapshot(name) or not image or not _found(_docker("image", "inspect", image.group(1)), "no such image",
                                                   "looking for GitLab's image"):
         return None
-    said = _docker("run", "--rm", "--network", "none", "--pull", "never", "-v", f"{SNAPSHOT}:/snapshot:ro",
+    said = _docker("run", "--rm", "--network", "none", "--pull", "never", "-v", f"{name}:/snapshot:ro",
                    "--entrypoint", "cat", image.group(1), f"/snapshot/{STAMP}")
     if said.returncode != 1 or "no such file" not in said.stderr.lower():
-        _done(said, f"reading the snapshot {SNAPSHOT}")
+        _done(said, f"reading the snapshot {name}")
     found = said.stdout.split() if said.returncode == 0 else []
     fresh = len(found) == 2 and found[1].isdigit() and time.time() - int(found[1]) < TOKEN_DAYS * 86400
     return found[0] if fresh else None
@@ -164,16 +173,16 @@ def prepare(stack, environ=os.environ, say=None, closed=None, limits=None):
     suffix, value = websites.suffix(environ), url(environ)
     if not value:
         raise GitLabError("GitLab is served by the mock websites: give their suffix")
-    made = _made()
+    made, own = _made(), _made(_own(stack))
     with contextlib.suppress(GitLabError):
-        if made == _stamp(stack, value) and _settings(_pinned(stack))["GITLAB_URL"] == value:
+        if _stamp(stack, value) in (made, own) and _settings(_pinned(stack))["GITLAB_URL"] == value:
             return stack
     _clone(stack)
     configure(stack, suffix, *SHARE_DEFAULT)
     _done(compose(stack, ["pull"], seconds=START_SECONDS), "pulling GitLab's images")
     down(stack)
-    if _snapshot():
-        _done(_docker("volume", "rm", SNAPSHOT), "removing the old snapshot")
+    if _snapshot(_own(stack)):
+        _done(_docker("volume", "rm", _own(stack)), "removing the old snapshot")
     init(stack, say, closed, limits)
     return stack
 
@@ -498,7 +507,7 @@ def _register(stack, value):
     return made["id"]
 
 
-def _copy(stack, settings, tar, keep):
+def _copy(stack, settings, tar, keep, name=SNAPSHOT):
     """``tar`` in a container of the project's, under GitLab's write limit; ``keep`` writes the snapshot."""
     image = _done(compose(stack, ["config", "--images"]), "reading the images").stdout.split()
     gitlab = next(i for i in image if i.startswith("gitlab/gitlab-ce"))
@@ -509,7 +518,7 @@ def _copy(stack, settings, tar, keep):
                          "--label", f"{SHARE_LABEL}={settings.get('OSWORLD2_GITLAB_SHARE') or 'stack'}",
                          "--device-write-bps", f"{disk}:{settings['OSWORLD2_GITLAB_GITLAB_BPS']}",
                          "--device-write-iops", f"{disk}:{settings['OSWORLD2_GITLAB_GITLAB_IOPS']}",
-                         *mounts, "-v", f"{SNAPSHOT}:/snapshot" + ("" if keep else ":ro"),
+                         *mounts, "-v", f"{name}:/snapshot" + ("" if keep else ":ro"),
                          "--entrypoint", "sh", gitlab, "-c", tar, seconds=COPY_SECONDS), "copying the volumes")
 
 
@@ -526,8 +535,8 @@ def _found(said, gone, what):
     return said.returncode == 0
 
 
-def _snapshot():
-    return _found(_docker("volume", "inspect", SNAPSHOT), "no such volume", f"looking for the snapshot {SNAPSHOT}")
+def _snapshot(name=SNAPSHOT):
+    return _found(_docker("volume", "inspect", name), "no such volume", f"looking for the snapshot {name}")
 
 
 def init(stack, say=None, closed=None, limits=None):
@@ -537,8 +546,9 @@ def init(stack, say=None, closed=None, limits=None):
     value, said, say = settings["GITLAB_URL"], token(stack), say or (lambda _: None)
     if _volumes():
         raise GitLabError(f"{PROJECT} has volumes already: python3 gitlab_server.py down STACK first")
-    if _snapshot():
-        raise GitLabError(f"the snapshot {SNAPSHOT} is there already: remove it (docker volume rm {SNAPSHOT}) to "
+    name = _own(stack)
+    if _snapshot(name):
+        raise GitLabError(f"the snapshot {name} is there already: remove it (docker volume rm {name}) to "
                           "make GitLab anew")
     t0 = time.time()
     _done(compose(stack, ["up", "-d", "--pull", "never", "gitlab"], limits=limits), "starting GitLab")
@@ -551,11 +561,12 @@ def init(stack, say=None, closed=None, limits=None):
     say(json.dumps({"runner": runner, "online_s": _until(RUNNER_SECONDS, "the runner",
                                                          lambda: _online(value, said, runner), closed)}))
     _done(compose(stack, ["stop"], limits=limits), "stopping GitLab")
-    _done(_docker("volume", "create", SNAPSHOT), "making the snapshot's volume")
+    _done(_docker("volume", "create", name), "making the snapshot's volume")
     _copy(stack, settings, f"tar -C /v -czf /snapshot/{ARCHIVE} {' '.join(VOLUMES)} && "
-                           f"printf '%s %s' {_stamp(stack, value)} {int(time.time())} > /snapshot/{STAMP}", keep=True)
+                           f"printf '%s %s' {_stamp(stack, value)} {int(time.time())} > /snapshot/{STAMP}", keep=True,
+          name=name)
     _done(compose(stack, ["down", "--volumes"], limits=limits), "removing GitLab")
-    return {"snapshot": SNAPSHOT, "s": round(time.time() - t0)}
+    return {"snapshot": name, "s": round(time.time() - t0)}
 
 
 def _online(value, token, runner):
@@ -568,12 +579,13 @@ def up(stack, limits=None, closed=None, say=None):
     stack = _pinned(stack)
     settings = _settings(stack, limits)
     value, said = settings["GITLAB_URL"], token(stack)
-    if not _snapshot():
-        raise GitLabError(f"no snapshot {SNAPSHOT}: python3 gitlab_server.py prepare STACK SUFFIX")
+    name = _name(stack, value)
+    if not _snapshot(name):
+        raise GitLabError(f"no snapshot {name}: python3 gitlab_server.py prepare STACK SUFFIX")
     t0 = time.time()
     _done(compose(stack, ["down", "--volumes"], limits=limits), "removing GitLab")
     _done(compose(stack, ["create", "--pull", "never"], limits=limits), "making GitLab's containers")
-    _copy(stack, settings, f"tar -C /v -xzf /snapshot/{ARCHIVE}", keep=False)
+    _copy(stack, settings, f"tar -C /v -xzf /snapshot/{ARCHIVE}", keep=False, name=name)
     if say:
         say(json.dumps({"restored_s": round(time.time() - t0)}))
     _done(compose(stack, ["start"], limits=limits), "starting GitLab")
