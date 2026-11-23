@@ -709,13 +709,15 @@ _SEEN = {}
 def _profiles():
     """Each archive under ASSETS that holds a mail profile, by its content; a file is read again once it changes."""
     found = set()
-    for d, _, files in os.walk(ASSETS, followlinks=True):
+    for d, _, files in os.walk(ASSETS, followlinks=True, onerror=_unreadable):
         for f in files:
             p = os.path.join(d, f)
             try:
                 st = os.stat(p)
-            except OSError:
-                continue
+            except OSError as e:
+                if isinstance(e, FileNotFoundError) and os.path.islink(p):
+                    continue
+                _unreadable(e)
             key = st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
             if _SEEN.get(p, (None,))[0] != key:
                 _SEEN[p] = key, _mail_profile(p)
@@ -724,12 +726,17 @@ def _profiles():
     return found
 
 
+def _unreadable(e):
+    raise RuntimeError(f"{os.path.relpath(e.filename, ASSETS)} in the assets cannot be read to look for mail profiles: "
+                       f"{type(e).__name__}")
+
+
 def _mail_profile(path):
     """Whether the file is a tar holding a mail profile; one read only in part, or a zip holding one, is refused."""
     try:
         try:
             t = tarfile.open(path)
-        except tarfile.ReadError:
+        except (tarfile.ReadError, EOFError, zlib.error):
             t = None
         with t or contextlib.nullcontext():
             found = t is not None and any(os.path.basename(m.name) == "prefs.js" and m.isfile()
@@ -763,22 +770,26 @@ def _signed_out(src, dst):
         if f.read(2) != b"\x1f\x8b":
             raise RuntimeError(f"{os.path.basename(src)} is a mail profile not in gzip, which this driver does not rewrite")
     fd, part = tempfile.mkstemp(".part", dir=os.path.dirname(dst))
-    with tarfile.open(src) as old, open(fd, "wb") as raw, \
-            gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz, tarfile.open(fileobj=gz, mode="w") as new:
-        for m in old:
-            name = os.path.normpath(m.name)
-            if m.islnk() or m.issparse() or os.path.isabs(name) or name.split(os.sep)[0] == "..":
-                raise RuntimeError(f"{os.path.basename(src)} has {m.name}, which this driver does not rewrite")
-            if SIGN_INS.search(name):
-                continue
-            data = old.extractfile(m) if m.isfile() else None
-            if data and os.path.basename(name) == "prefs.js":
-                text = (ONLINE.sub(r"\1false\2", data.read().decode("utf-8")).rstrip("\n") + "\n" + OFFLINE).encode("utf-8")
-                data, m.size = io.BytesIO(text), len(text)
-                m.pax_headers.pop("size", None)
-            new.addfile(m, data)
-    os.chmod(part, 0o644)
-    os.replace(part, dst)
+    try:
+        with open(fd, "wb") as raw, tarfile.open(src) as old, \
+                gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz, tarfile.open(fileobj=gz, mode="w") as new:
+            for m in old:
+                name = os.path.normpath(m.name)
+                if m.islnk() or m.issparse() or os.path.isabs(name) or name.split(os.sep)[0] == "..":
+                    raise RuntimeError(f"{os.path.basename(src)} has {m.name}, which this driver does not rewrite")
+                if SIGN_INS.search(name):
+                    continue
+                data = old.extractfile(m) if m.isfile() else None
+                if data and os.path.basename(name) == "prefs.js":
+                    text = (ONLINE.sub(r"\1false\2", data.read().decode("utf-8")).rstrip("\n") + "\n" + OFFLINE).encode("utf-8")
+                    data, m.size = io.BytesIO(text), len(text)
+                    m.pax_headers.pop("size", None)
+                new.addfile(m, data)
+        os.chmod(part, 0o644)
+        os.replace(part, dst)
+    except BaseException:
+        os.remove(part)
+        raise
 
 
 def _port_free(eid, port):

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import contextlib
+import gzip
 import io
 import os
+import random
 import shutil
 import tarfile
 import tempfile
@@ -156,6 +158,8 @@ class SignedOut(unittest.TestCase):
             info.size = len(data)
             t.addfile(info, io.BytesIO(data))
         os.truncate(cut, 1500)
+        with open(os.path.join(self.driver.ASSETS, "shared", "log.txt.gz"), "wb") as f:
+            f.write(gzip.compress(random.Random(1).randbytes(4000))[:300])
         with self.assertRaisesRegex(RuntimeError, "cut.tar in the assets cannot be read through"):
             self.driver._assets(self.unit, "007")
         os.remove(cut)
@@ -168,6 +172,12 @@ class SignedOut(unittest.TestCase):
         os.chmod(shut, 0o644)
         root = self.driver._assets(self.unit, "007")
         self.assertNotIn("true", members(os.path.join(root, "shared", "shut.tar.gz"))[PROFILE + "prefs.js"].decode())
+        for mode, rel in ((0, "locked"), (0o444, "dim")):
+            folder = os.path.dirname(self.add("shared", rel, "p.tar.gz"))
+            os.chmod(folder, mode)
+            with self.subTest(rel), self.assertRaisesRegex(RuntimeError, "cannot be read to look for mail profiles"):
+                self.driver._assets(self.unit, "007")
+            os.chmod(folder, 0o755)
 
     def test_the_profile_loses_its_sign_ins_and_keeps_its_mail(self):
         root = self.driver._assets(self.unit, "006")
@@ -208,6 +218,7 @@ class SignedOut(unittest.TestCase):
             t.addfile(link)
         with self.assertRaisesRegex(RuntimeError, "does not rewrite"):
             self.driver._assets(self.unit, "006")
+        self.assertEqual([n for n in os.listdir(os.path.join(self.unit, "assets", "task_006")) if n.endswith(".part")], [])
 
     def test_a_broken_profile_archive_is_a_setup_error(self):
         path = os.path.join(self.driver.ASSETS, "task_006", "thunderbird-profile.tar.gz")
