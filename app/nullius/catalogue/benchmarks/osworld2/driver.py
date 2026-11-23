@@ -903,11 +903,9 @@ def _write_limit():
 
 
 def _freecad(eid):
-    if eid in FREECAD and not any(map(shutil.which, FREECAD_PROGRAMS)) and subprocess.run(
-            [sys.executable, "-c", "import FreeCAD"], env=_env(eid), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=120).returncode:
+    if eid in FREECAD and not any(map(shutil.which, FREECAD_PROGRAMS)):
         raise RuntimeError(f"task {eid} is scored with FreeCAD on this machine, and there is none: put one of "
-                           f"{', '.join(FREECAD_PROGRAMS)} on PATH or FreeCAD's module in the driver's Python, or leave the task out")
+                           f"{', '.join(FREECAD_PROGRAMS)} on PATH, or leave the task out")
 
 
 def _ready(domain, eid):
