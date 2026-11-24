@@ -488,12 +488,65 @@ class Sweep(unittest.TestCase):
 
 
 PROVIDER_PY = "LOCK_TIMEOUT = 10\n"
+PSUTIL_PY = """import types
+def net_connections():
+    return [types.SimpleNamespace(laddr=types.SimpleNamespace(port=p)) for p in (22, 5000)]
+"""
+PORTS_PY = """import os
+import psutil
+LOCK_TIMEOUT = 10
+RUNNING = [
+    ([], {}, False),
+    ([{"PrivatePort": 8006, "Type": "tcp"}], {"8006/tcp": None}, False),
+    ([{"IP": "127.0.0.1", "PrivatePort": 5000, "PublicPort": 5001, "Type": "tcp"},
+      {"IP": "::1", "PrivatePort": 5000, "PublicPort": 5001, "Type": "tcp"},
+      {"IP": "127.0.0.1", "PrivatePort": 8006, "PublicPort": 8007, "Type": "tcp"},
+      {"PrivatePort": 9222, "Type": "tcp"}],
+     {"5000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "5001"}, {"HostIp": "::1", "HostPort": "5001"}],
+      "8006/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8007"}], "9222/tcp": None}, False),
+    ([{"IP": "127.0.0.1", "PrivatePort": 8080, "PublicPort": 8081, "Type": "tcp"}],
+     {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8081"}]}, True),
+]
+class ReadTimeout(Exception):
+    pass
+class Container:
+    def __init__(self, inspected, busy):
+        self.inspected, self.busy = inspected, busy
+    @property
+    def attrs(self):
+        if self.busy and os.environ.get("FAKE_BUSY"):
+            raise ReadTimeout()
+        return {"NetworkSettings": {"Ports": self.inspected}}
+class Containers:
+    def list(self):
+        return [Container(i, b) for _, i, b in RUNNING]
+class API:
+    def containers(self):
+        return [{"Id": str(n), "Ports": s} for n, (s, _, _) in enumerate(RUNNING)]
+class Client:
+    containers, api = Containers(), API()
+class DockerProvider:
+    client = Client()
+    def _get_used_ports(self):
+        system_ports = set(conn.laddr.port for conn in psutil.net_connections())
+        docker_ports = set()
+        for container in self.client.containers.list():
+            ports = container.attrs['NetworkSettings']['Ports']
+            if ports:
+                for port_mappings in ports.values():
+                    if port_mappings:
+                        docker_ports.update(int(p['HostPort']) for p in port_mappings)
+        return system_ports | docker_ports
+UPSTREAM = DockerProvider._get_used_ports
+"""
+SHOW = ("import desktop_env.providers.docker.provider as m; p = m.DockerProvider(); used = p._get_used_ports(); "
+        "print(sorted(used), used == m.UPSTREAM(p) if not __import__('os').environ.get('FAKE_BUSY') else '-')")
 
 
 class StartQueue(unittest.TestCase):
     """The provider's port lock, with a fake desktop_env and the startup folder first on PYTHONPATH."""
 
-    def test_every_vm_start_waits_for_the_providers_port_lock(self):
+    def fake(self, provider_py):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         package = os.path.join(tmp, "desktop_env", "providers", "docker")
@@ -501,16 +554,40 @@ class StartQueue(unittest.TestCase):
         for folder in ("desktop_env", os.path.join("desktop_env", "providers"), package):
             open(os.path.join(tmp, folder, "__init__.py"), "w").close()
         with open(os.path.join(package, "provider.py"), "w") as f:
-            f.write(PROVIDER_PY)
-        environ = {k: v for k, v in os.environ.items() if not k.startswith("NULLIUS_OPTION_")}
+            f.write(provider_py)
+        with open(os.path.join(tmp, "psutil.py"), "w") as f:
+            f.write(PSUTIL_PY)
+        return tmp
+
+    def run_in(self, tmp, code, option, **env):
+        environ = {k: v for k, v in os.environ.items() if not k.startswith("NULLIUS_OPTION_") and k != "FAKE_BUSY"}
+        return subprocess.run([sys.executable, "-c", code], cwd=tmp, capture_output=True, text=True, timeout=60,
+                              env=dict(environ, PYTHONPATH=os.pathsep.join([STARTUP, tmp]),
+                                       NULLIUS_OPTION_VM_PROVIDER=option, **env))
+
+    def test_every_vm_start_waits_for_the_providers_port_lock(self):
+        tmp = self.fake(PROVIDER_PY)
         for option, wanted in (("docker", "-1"), ("aws", "10")):
             with self.subTest(option=option):
-                done = subprocess.run([sys.executable, "-c", "import desktop_env.providers.docker.provider as m; "
-                                       "print(m.LOCK_TIMEOUT)"], cwd=tmp, capture_output=True, text=True, timeout=60,
-                                      env=dict(environ, PYTHONPATH=os.pathsep.join([STARTUP, tmp]),
-                                               NULLIUS_OPTION_VM_PROVIDER=option))
+                done = self.run_in(tmp, "import desktop_env.providers.docker.provider as m; print(m.LOCK_TIMEOUT)", option)
                 self.assertEqual(done.returncode, 0, done.stderr[-2000:])
                 self.assertEqual(done.stdout.strip(), wanted)
+
+    def test_the_ports_in_use_are_the_upstreams_without_an_inspect_that_hangs(self):
+        tmp = self.fake(PORTS_PY)
+        wanted = "[22, 5000, 5001, 8007, 8081]"
+        for busy, said in (("", f"{wanted} True"), ("1", f"{wanted} -")):
+            with self.subTest(busy=busy):
+                done = self.run_in(tmp, SHOW, "docker", FAKE_BUSY=busy)
+                self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+                self.assertEqual(done.stdout.strip(), said)
+        done = self.run_in(tmp, SHOW, "aws", FAKE_BUSY="1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("ReadTimeout", done.stderr)
+        done = self.run_in(tmp, SHOW + "; before = m.DockerProvider._get_used_ports; import sitecustomize; "
+                           "sitecustomize.queue_starts(m); print(m.DockerProvider._get_used_ports is before)", "docker")
+        self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        self.assertEqual(done.stdout.split(), wanted.split() + ["True", "True"])
 
 
 class Said:

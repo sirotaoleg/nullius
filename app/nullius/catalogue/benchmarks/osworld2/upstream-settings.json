@@ -568,6 +568,13 @@
  },
  {
   "entry": "desktop_env/providers/docker/provider.py",
+  "setting": "_get_used_ports()",
+  "values": "the host ports in use",
+  "default": "the running containers' list, then an inspect of each",
+  "nullius": "fixed:the same ports from the list alone (startup/sitecustomize.py), still within the port lock - an inspect waits on a container being started or removed, and its read timeout ended the unit before its VM was made"
+ },
+ {
+  "entry": "desktop_env/providers/docker/provider.py",
   "setting": "docker.from_env() timeout",
   "values": "seconds a Docker call",
   "default": "60, docker-py's default",

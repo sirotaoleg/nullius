@@ -428,8 +428,23 @@ def desktop_env(module):
 
 
 def queue_starts(module):
-    """Every VM start waits its turn for the provider's port lock, a restart as the first start."""
+    """Every VM start waits its turn for the provider's port lock, a restart as the first start. The ports in use
+    come from one list of the running containers, with no inspect of each, which waits on a container being
+    started or removed."""
     module.LOCK_TIMEOUT = -1
+    cls = getattr(module, "DockerProvider", None)
+    if cls is None or not hasattr(cls, "_get_used_ports") or getattr(cls._get_used_ports, MARK, False):
+        return
+
+    @functools.wraps(cls._get_used_ports)
+    def used_ports(self):
+        import psutil
+        system = {conn.laddr.port for conn in psutil.net_connections()}
+        return system | {int(p["PublicPort"]) for c in self.client.api.containers() for p in c.get("Ports") or []
+                         if p.get("PublicPort")}
+
+    setattr(used_ports, MARK, True)
+    cls._get_used_ports = used_ports
 
 
 def _took(path):
