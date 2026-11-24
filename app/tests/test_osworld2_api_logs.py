@@ -279,7 +279,7 @@ class Reaper(unittest.TestCase):
             try:
                 files = [f for f in os.listdir(self.folder) if f.endswith(".json")]
                 if len(files) == n and all(read(os.path.join(self.folder, f)).startswith(api_logs.MARK)
-                                           for f in files):
+                                           for f in files) and self.said():
                     return True
             except OSError:
                 pass
