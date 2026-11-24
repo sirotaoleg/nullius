@@ -591,8 +591,11 @@ def up(stack, limits=None, closed=None, say=None):
         say(json.dumps({"restored_s": round(time.time() - t0)}))
     _done(compose(stack, ["start"], limits=limits), "starting GitLab")
     _until(START_SECONDS, "GitLab", lambda: ready(value, said, runner=True, name=name), closed)
-    _until(VMS_SECONDS, "GitLab from the VMs' network", lambda: _from_vms(settings["OSWORLD2_GITLAB_HOST"]) is None,
-           closed)
+    host = settings["OSWORLD2_GITLAB_HOST"]
+    vms = _until(VMS_SECONDS, "GitLab from the VMs' network",
+                 lambda: _from_vms(host) is None and bool(ready(value, said, runner=True, name=name)), closed)
+    if say:
+        say(json.dumps({"from_vms_s": vms}))
     return {"url": value, "up_s": round(time.time() - t0)}
 
 
@@ -600,7 +603,7 @@ def _from_vms(host):
     """GitLab's sign-in page from a container on the VMs' network, by the mock websites' Caddy's busybox wget."""
     image = websites.CADDY.search(websites._override()).group(1)
     said = _docker("run", "--rm", "--network", websites._network(), "--pull", "never", "--entrypoint", "wget",
-                   image, "-q", "-O", "/dev/null", "-T", "10", f"http://{host}/users/sign_in")
+                   image, "-q", "-O", "/dev/null", "-T", "10", f"http://{host}/users/sign_in", seconds=2 * HTTP_SECONDS)
     if said.returncode != 0:
         raise GitLabError(f"from the VMs' network, {host} did not answer: "
                           + ((said.stderr or "").strip().splitlines() or ["no reason"])[-1][:300])

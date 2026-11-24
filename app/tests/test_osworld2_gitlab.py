@@ -377,7 +377,7 @@ class Driver(unittest.TestCase):
                                    (self.g, "prepare", lambda where, **kw: self.order.append(("prepare", where))
                                     or self.ups.append(kw["closed"]) or self.order.append(("limits", kw["limits"]))),
                                    (self.g, "unit", lambda where, dir: os.path.join(dir, "gitlab.limits")),
-                                   (self.g, "up", lambda *a: self.ups.append(a) or self.order.append(("up",))),
+                                   (self.g, "up", lambda *a, **kw: self.ups.append(a) or self.order.append(("up",))),
                                    (self.driver, "_warden", warden)):
             p = mock.patch.object(target, name, fake)
             p.start()
@@ -874,15 +874,26 @@ class Lifecycle(unittest.TestCase):
 
     def crashed(self, wget):
         self.configure()
+        own = self.g._own(self.stack)
+        self.state = {"containers": {"copy-left": self.g.COPY_LABEL, "osworld2-gitlab-gitlab-1": self.g.PROJECT,
+                                     "someone-else-1": "another-project"},
+                      "volumes": {self.g.SNAPSHOT, own, "osworld2-gitlab_gitlab_data", "someone-else-data"}}
         said = []
 
         def docker(*a, **kw):
-            said.append(a)
+            said.append((a, kw))
             if a[:2] == ("ps", "-aq") and f"label={self.g.COPY_LABEL}" in a:
-                return Fake(stdout="copy-left\n")
+                return Fake(stdout="".join(f"{c}\n" for c, v in self.state["containers"].items()
+                                           if v == self.g.COPY_LABEL))
+            if a[:2] == ("rm", "-f"):
+                for c in a[2:]:
+                    self.state["containers"].pop(c)
+            if a[:1] == ("compose",) and "down" in a and a[1:3] == ("-p", self.g.PROJECT):
+                self.state["containers"] = {c: v for c, v in self.state["containers"].items() if v != self.g.PROJECT}
+                self.state["volumes"] = {v for v in self.state["volumes"] if not v.startswith(self.g.PROJECT + "_")}
             return wget() if "wget" in a else Fake()
         for fn, fake in (("_docker", docker), ("_made", lambda *a: None), ("_snapshot", lambda name=None: True),
-                         ("_copy", lambda *a, **kw: said.append(("copy",))), ("ready", lambda *a, **kw: URL)):
+                         ("_copy", lambda *a, **kw: said.append((("copy",), {}))), ("ready", lambda *a, **kw: URL)):
             p = mock.patch.object(self.g, fn, fake)
             p.start()
             self.addCleanup(p.stop)
@@ -892,38 +903,51 @@ class Lifecycle(unittest.TestCase):
             self.addCleanup(p.stop)
         return said
 
-    def test_up_after_a_crash_removes_what_the_dead_unit_left_and_nothing_else(self):
+    def test_up_after_a_crash_removes_what_the_dead_unit_left_but_no_snapshot_and_nothing_of_others(self):
         said = self.crashed(lambda: Fake())
         self.g.up(self.stack)
-        create = next(i for i, a in enumerate(said) if "create" in a)
-        self.assertIn(("rm", "-f", "copy-left"), said[:create])
-        self.assertTrue(any({"down", "--volumes", "--remove-orphans"} <= set(a) for a in said[:create]))
-        for a in said:
+        calls = [a for a, _ in said]
+        create = next(i for i, a in enumerate(calls) if "create" in a)
+        self.assertIn(("rm", "-f", "copy-left"), calls[:create])
+        self.assertTrue(any({"down", "--volumes", "--remove-orphans"} <= set(a) for a in calls[:create]))
+        down = next(i for i, a in enumerate(calls) if "down" in a)
+        self.assertLess(calls.index(("rm", "-f", "copy-left")), down)
+        self.assertLess(down, calls.index(("copy",)))
+        with open(self.g.OVERRIDE, encoding="utf-8") as f:
+            self.assertNotIn(self.g.SNAPSHOT, f.read())
+        self.assertEqual(self.state["containers"], {"someone-else-1": "another-project"})
+        self.assertEqual(self.state["volumes"], {self.g.SNAPSHOT, self.g._own(self.stack), "someone-else-data"})
+        for a in calls:
             with self.subTest(a=a[:3]):
                 self.assertFalse(any(self.g.SNAPSHOT in str(x) for x in a))
                 self.assertNotEqual(a[:2], ("volume", "rm"))
                 if a[:1] == ("compose",):
                     self.assertEqual(a[1:3], ("-p", self.g.PROJECT))
-                if a[:1] == ("rm",):
-                    self.assertEqual(a, ("rm", "-f", "copy-left"))
 
     def test_up_waits_out_a_passing_502_from_the_vms_network(self):
         answers = [Fake(1, stderr="wget: server returned error: HTTP/1.1 502 Bad Gateway\n"), Fake()]
         said = self.crashed(lambda: answers.pop(0))
+        told = []
         with mock.patch.object(self.g, "POLL", 0.01):
-            self.assertEqual(self.g.up(self.stack)["url"], URL)
-        self.assertEqual(sum("wget" in a for a in said), 2)
+            self.assertEqual(self.g.up(self.stack, say=told.append)["url"], URL)
+        self.assertIn("from_vms_s", json.loads(told[-1]))
+        wgets = [kw for a, kw in said if "wget" in a]
+        self.assertEqual(len(wgets), 2)
+        self.assertTrue(all(kw["seconds"] <= 30 for kw in wgets))
 
     def test_a_lasting_502_from_the_vms_network_fails_in_vms_seconds_not_start_seconds(self):
         said = self.crashed(lambda: Fake(1, stderr="wget: server returned error: HTTP/1.1 502 Bad Gateway\n"))
         t0 = time.time()
-        with mock.patch.object(self.g, "POLL", 0.01), mock.patch.object(self.g, "VMS_SECONDS", 0.3), \
+        with mock.patch.object(self.g, "POLL", 0.01), mock.patch.object(self.g, "VMS_SECONDS", 0.3, create=True), \
                 self.assertRaises(self.g.GitLabError) as raised:
             self.g.up(self.stack)
         self.assertLess(time.time() - t0, 5)
         self.assertIn("GitLab from the VMs' network did not come up in 0.3 s", str(raised.exception))
         self.assertIn("502 Bad Gateway", str(raised.exception))
-        self.assertGreater(sum("wget" in a for a in said), 1)
+        self.assertGreater(sum("wget" in a for a, _ in said), 1)
+
+    def test_gitlab_from_the_vms_network_is_waited_on_minutes_not_an_hour(self):
+        self.assertLessEqual(self.g.VMS_SECONDS + 2 * self.g.HTTP_SECONDS + self.g.POLL, 300)
         self.assertLess(self.g.VMS_SECONDS, self.g.START_SECONDS / 10)
 
     def test_a_snapshot_that_cannot_be_read_is_kept(self):
@@ -968,7 +992,7 @@ spec.loader.exec_module(driver)
 driver.gitlab_server.LOCK, driver.websites.SITES_LOCK = lock, sites
 driver.gitlab_server.home = lambda: os.environ["STACK"]
 driver.gitlab_server.prepare = lambda *a, **kw: None
-driver.gitlab_server.up = lambda *a: (print("up", flush=True), time.sleep(600))
+driver.gitlab_server.up = lambda *a, **kw: (print("up", flush=True), time.sleep(600))
 with driver._gitlab("041", os.environ["UNIT"]):
     pass
 """
