@@ -947,7 +947,7 @@ class Lifecycle(unittest.TestCase):
         self.assertGreater(sum("wget" in a for a, _ in said), 1)
 
     def test_gitlab_from_the_vms_network_is_waited_on_minutes_not_an_hour(self):
-        self.assertLessEqual(self.g.VMS_SECONDS + 2 * self.g.HTTP_SECONDS + self.g.POLL, 300)
+        self.assertLessEqual(self.g.VMS_SECONDS + 2 * self.g.HTTP_SECONDS + 3 * self.g.HTTP_SECONDS + self.g.POLL, 300)
         self.assertLess(self.g.VMS_SECONDS, self.g.START_SECONDS / 10)
 
     def test_a_snapshot_that_cannot_be_read_is_kept(self):
