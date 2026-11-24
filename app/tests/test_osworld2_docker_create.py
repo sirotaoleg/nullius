@@ -659,16 +659,16 @@ class StartQueue(unittest.TestCase):
             self.addCleanup(unit.kill)
             return unit
 
-        def seen(path):
+        def seen(path, unit):
             deadline = time.monotonic() + 30
-            while not os.path.exists(path) and time.monotonic() < deadline:
+            while not os.path.exists(path) and unit.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.05)
             return os.path.exists(path)
 
         first = start()
-        self.assertTrue(seen(state + ".started"))
+        self.assertTrue(seen(state + ".started", first))
         second = start()
-        self.assertTrue(seen(env["FAKE_LOCK"] + ".waiting"))
+        self.assertTrue(seen(env["FAKE_LOCK"] + ".waiting", second))
         self.assertIsNone(second.poll())
         open(state + ".go", "w").close()
         said = [unit.communicate(timeout=60) for unit in (first, second)]
