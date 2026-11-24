@@ -70,6 +70,7 @@ DOCKER_HOST = "tcp://docker:2376"
 MIN_TOKEN = 20
 HTTP_SECONDS = 15
 START_SECONDS = 3600
+VMS_SECONDS = 180
 RUNNER_SECONDS = 300
 COPY_SECONDS = 3600
 POLL = 10
@@ -583,14 +584,15 @@ def up(stack, limits=None, closed=None, say=None):
     if not _snapshot(name):
         raise GitLabError(f"no snapshot {name}: python3 gitlab_server.py prepare STACK SUFFIX")
     t0 = time.time()
-    _done(compose(stack, ["down", "--volumes"], limits=limits), "removing GitLab")
+    down(stack, limits)
     _done(compose(stack, ["create", "--pull", "never"], limits=limits), "making GitLab's containers")
     _copy(stack, settings, f"tar -C /v -xzf /snapshot/{ARCHIVE}", keep=False, name=name)
     if say:
         say(json.dumps({"restored_s": round(time.time() - t0)}))
     _done(compose(stack, ["start"], limits=limits), "starting GitLab")
     _until(START_SECONDS, "GitLab", lambda: ready(value, said, runner=True, name=name), closed)
-    _from_vms(settings["OSWORLD2_GITLAB_HOST"])
+    _until(VMS_SECONDS, "GitLab from the VMs' network", lambda: _from_vms(settings["OSWORLD2_GITLAB_HOST"]) is None,
+           closed)
     return {"url": value, "up_s": round(time.time() - t0)}
 
 

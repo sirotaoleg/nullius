@@ -872,6 +872,60 @@ class Lifecycle(unittest.TestCase):
                 self.assertEqual(looked, [name])
                 self.assertEqual(copied, [(False, name)])
 
+    def crashed(self, wget):
+        self.configure()
+        said = []
+
+        def docker(*a, **kw):
+            said.append(a)
+            if a[:2] == ("ps", "-aq") and f"label={self.g.COPY_LABEL}" in a:
+                return Fake(stdout="copy-left\n")
+            return wget() if "wget" in a else Fake()
+        for fn, fake in (("_docker", docker), ("_made", lambda *a: None), ("_snapshot", lambda name=None: True),
+                         ("_copy", lambda *a, **kw: said.append(("copy",))), ("ready", lambda *a, **kw: URL)):
+            p = mock.patch.object(self.g, fn, fake)
+            p.start()
+            self.addCleanup(p.stop)
+        for p in (mock.patch.object(self.g.websites, "_compose_version", lambda: None),
+                  mock.patch.object(self.g.websites, "_network", lambda: "nullius-osworld2")):
+            p.start()
+            self.addCleanup(p.stop)
+        return said
+
+    def test_up_after_a_crash_removes_what_the_dead_unit_left_and_nothing_else(self):
+        said = self.crashed(lambda: Fake())
+        self.g.up(self.stack)
+        create = next(i for i, a in enumerate(said) if "create" in a)
+        self.assertIn(("rm", "-f", "copy-left"), said[:create])
+        self.assertTrue(any({"down", "--volumes", "--remove-orphans"} <= set(a) for a in said[:create]))
+        for a in said:
+            with self.subTest(a=a[:3]):
+                self.assertFalse(any(self.g.SNAPSHOT in str(x) for x in a))
+                self.assertNotEqual(a[:2], ("volume", "rm"))
+                if a[:1] == ("compose",):
+                    self.assertEqual(a[1:3], ("-p", self.g.PROJECT))
+                if a[:1] == ("rm",):
+                    self.assertEqual(a, ("rm", "-f", "copy-left"))
+
+    def test_up_waits_out_a_passing_502_from_the_vms_network(self):
+        answers = [Fake(1, stderr="wget: server returned error: HTTP/1.1 502 Bad Gateway\n"), Fake()]
+        said = self.crashed(lambda: answers.pop(0))
+        with mock.patch.object(self.g, "POLL", 0.01):
+            self.assertEqual(self.g.up(self.stack)["url"], URL)
+        self.assertEqual(sum("wget" in a for a in said), 2)
+
+    def test_a_lasting_502_from_the_vms_network_fails_in_vms_seconds_not_start_seconds(self):
+        said = self.crashed(lambda: Fake(1, stderr="wget: server returned error: HTTP/1.1 502 Bad Gateway\n"))
+        t0 = time.time()
+        with mock.patch.object(self.g, "POLL", 0.01), mock.patch.object(self.g, "VMS_SECONDS", 0.3), \
+                self.assertRaises(self.g.GitLabError) as raised:
+            self.g.up(self.stack)
+        self.assertLess(time.time() - t0, 5)
+        self.assertIn("GitLab from the VMs' network did not come up in 0.3 s", str(raised.exception))
+        self.assertIn("502 Bad Gateway", str(raised.exception))
+        self.assertGreater(sum("wget" in a for a in said), 1)
+        self.assertLess(self.g.VMS_SECONDS, self.g.START_SECONDS / 10)
+
     def test_a_snapshot_that_cannot_be_read_is_kept(self):
         def fail(*a):
             raise self.g.GitLabError("docker volume got no answer in 300 s")
