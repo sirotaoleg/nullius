@@ -539,6 +539,57 @@ class DockerProvider:
         return system_ports | docker_ports
 UPSTREAM = DockerProvider._get_used_ports
 """
+LOCKED_PY = """import fcntl, json, os, time
+import psutil
+LOCK_TIMEOUT = 10
+STATE = os.environ["FAKE_STATE"]
+class Timeout(Exception):
+    pass
+class FileLock:
+    def __init__(self, path, timeout):
+        self.path, self.timeout = path, timeout
+    def __enter__(self):
+        self.f, t0 = open(self.path, "w"), time.monotonic()
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if 0 <= self.timeout < time.monotonic() - t0:
+                    raise Timeout()
+                time.sleep(0.05)
+    def __exit__(self, *exc):
+        self.f.close()
+def running():
+    with open(STATE) as f:
+        return json.load(f)
+class Containers:
+    def run(self, ports):
+        open(STATE + ".started", "w").close()
+        time.sleep(float(os.environ.get("FAKE_RUN_SECONDS", "0")))
+        made = running() + [sorted(ports.values())]
+        with open(STATE, "w") as f:
+            json.dump(made, f)
+class API:
+    def containers(self):
+        return [{"Ports": [{"PrivatePort": p, "PublicPort": p, "Type": "tcp"} for p in ports]} for ports in running()]
+class Client:
+    containers, api = Containers(), API()
+class DockerProvider:
+    client = Client()
+    def _get_used_ports(self):
+        raise AssertionError("upstream's inspect of each")
+    def _get_available_port(self, start_port):
+        used, port = self._get_used_ports(), start_port
+        while port in used:
+            port += 1
+        return port
+    def start_emulator(self):
+        with FileLock(os.environ["FAKE_LOCK"], timeout=LOCK_TIMEOUT):
+            ports = {8006: self._get_available_port(8006), 5000: self._get_available_port(5000)}
+            self.client.containers.run(ports)
+        return sorted(ports.values())
+"""
 SHOW = ("import desktop_env.providers.docker.provider as m; p = m.DockerProvider(); used = p._get_used_ports(); "
         "print(sorted(used), used == m.UPSTREAM(p) if not __import__('os').environ.get('FAKE_BUSY') else '-')")
 
@@ -588,8 +639,28 @@ class StartQueue(unittest.TestCase):
                            "sitecustomize.queue_starts(m); print(m.DockerProvider._get_used_ports is before)", "docker")
         self.assertEqual(done.returncode, 0, done.stderr[-2000:])
         self.assertEqual(done.stdout.split(), wanted.split() + ["True", "True"])
-        done = self.run_in(tmp, "import logging; logging.basicConfig(level=logging.INFO); " + SHOW, "docker")
-        self.assertRegex(done.stderr, r"INFO:nullius\.osworld2:ports in use: 4 containers listed in \d+\.\d\d s")
+
+    def test_a_second_start_waits_for_the_lock_and_takes_other_ports(self):
+        tmp = self.fake(LOCKED_PY)
+        state = os.path.join(tmp, "running.json")
+        with open(state, "w") as f:
+            f.write("[]")
+        env = dict(FAKE_STATE=state, FAKE_LOCK=os.path.join(tmp, "port.lck"))
+        code = "import desktop_env.providers.docker.provider as m; print(m.DockerProvider().start_emulator())"
+        environ = {k: v for k, v in os.environ.items() if not k.startswith("NULLIUS_OPTION_")}
+        first = subprocess.Popen([sys.executable, "-c", code], cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, env=dict(environ, PYTHONPATH=os.pathsep.join([STARTUP, tmp]),
+                                                     NULLIUS_OPTION_VM_PROVIDER="docker", FAKE_RUN_SECONDS="1", **env))
+        self.addCleanup(first.kill)
+        deadline = time.monotonic() + 30
+        while not os.path.exists(state + ".started") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        second = self.run_in(tmp, code, "docker", **env)
+        out, err = first.communicate(timeout=60)
+        self.assertEqual(first.returncode, 0, err[-2000:])
+        self.assertEqual(second.returncode, 0, second.stderr[-2000:])
+        self.assertEqual(out.strip(), "[5001, 8006]")
+        self.assertEqual(second.stdout.strip(), "[5002, 8007]")
 
 
 class Said:
