@@ -588,6 +588,8 @@ class StartQueue(unittest.TestCase):
                            "sitecustomize.queue_starts(m); print(m.DockerProvider._get_used_ports is before)", "docker")
         self.assertEqual(done.returncode, 0, done.stderr[-2000:])
         self.assertEqual(done.stdout.split(), wanted.split() + ["True", "True"])
+        done = self.run_in(tmp, "import logging; logging.basicConfig(level=logging.INFO); " + SHOW, "docker")
+        self.assertRegex(done.stderr, r"INFO:nullius\.osworld2:ports in use: 4 containers listed in \d+\.\d\d s")
 
 
 class Said:

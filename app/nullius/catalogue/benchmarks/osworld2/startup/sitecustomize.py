@@ -440,8 +440,11 @@ def queue_starts(module):
     def used_ports(self):
         import psutil
         system = {conn.laddr.port for conn in psutil.net_connections()}
-        return system | {int(p["PublicPort"]) for c in self.client.api.containers() for p in c.get("Ports") or []
-                         if p.get("PublicPort")}
+        t0 = time.monotonic()
+        listed = self.client.api.containers()
+        logging.getLogger("nullius.osworld2").info("ports in use: %d containers listed in %.2f s", len(listed),
+                                                   time.monotonic() - t0)
+        return system | {int(p["PublicPort"]) for c in listed for p in c.get("Ports") or [] if p.get("PublicPort")}
 
     setattr(used_ports, MARK, True)
     cls._get_used_ports = used_ports
