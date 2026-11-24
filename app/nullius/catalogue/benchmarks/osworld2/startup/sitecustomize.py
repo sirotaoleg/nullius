@@ -428,8 +428,7 @@ def desktop_env(module):
 
 
 def queue_starts(module):
-    """Every VM start waits its turn for the provider's port lock, a restart as the first start; the ports in use
-    come from one list of the running containers."""
+    """Every VM start waits its turn for the provider's port lock, a restart as the first start."""
     module.LOCK_TIMEOUT = -1
     cls = getattr(module, "DockerProvider", None)
     if cls is None or not hasattr(cls, "_get_used_ports") or getattr(cls._get_used_ports, MARK, False):

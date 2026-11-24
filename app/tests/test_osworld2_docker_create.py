@@ -555,6 +555,7 @@ class FileLock:
                 fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return self
             except BlockingIOError:
+                open(self.path + ".waiting", "w").close()
                 if 0 <= self.timeout < time.monotonic() - t0:
                     raise Timeout()
                 time.sleep(0.05)
@@ -566,7 +567,8 @@ def running():
 class Containers:
     def run(self, ports):
         open(STATE + ".started", "w").close()
-        time.sleep(float(os.environ.get("FAKE_RUN_SECONDS", "0")))
+        while not os.path.exists(STATE + ".go"):
+            time.sleep(0.05)
         made = running() + [sorted(ports.values())]
         with open(STATE, "w") as f:
             json.dump(made, f)
@@ -648,19 +650,30 @@ class StartQueue(unittest.TestCase):
         env = dict(FAKE_STATE=state, FAKE_LOCK=os.path.join(tmp, "port.lck"))
         code = "import desktop_env.providers.docker.provider as m; print(m.DockerProvider().start_emulator())"
         environ = {k: v for k, v in os.environ.items() if not k.startswith("NULLIUS_OPTION_")}
-        first = subprocess.Popen([sys.executable, "-c", code], cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, env=dict(environ, PYTHONPATH=os.pathsep.join([STARTUP, tmp]),
-                                                     NULLIUS_OPTION_VM_PROVIDER="docker", FAKE_RUN_SECONDS="1", **env))
-        self.addCleanup(first.kill)
-        deadline = time.monotonic() + 30
-        while not os.path.exists(state + ".started") and time.monotonic() < deadline:
-            time.sleep(0.05)
-        second = self.run_in(tmp, code, "docker", **env)
-        out, err = first.communicate(timeout=60)
-        self.assertEqual(first.returncode, 0, err[-2000:])
-        self.assertEqual(second.returncode, 0, second.stderr[-2000:])
-        self.assertEqual(out.strip(), "[5001, 8006]")
-        self.assertEqual(second.stdout.strip(), "[5002, 8007]")
+        environ.update(env, PYTHONPATH=os.pathsep.join([STARTUP, tmp]), NULLIUS_OPTION_VM_PROVIDER="docker")
+
+        def start():
+            unit = subprocess.Popen([sys.executable, "-c", code], cwd=tmp, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, env=environ)
+            self.addCleanup(unit.wait)
+            self.addCleanup(unit.kill)
+            return unit
+
+        def seen(path):
+            deadline = time.monotonic() + 30
+            while not os.path.exists(path) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            return os.path.exists(path)
+
+        first = start()
+        self.assertTrue(seen(state + ".started"))
+        second = start()
+        self.assertTrue(seen(env["FAKE_LOCK"] + ".waiting"))
+        self.assertIsNone(second.poll())
+        open(state + ".go", "w").close()
+        said = [unit.communicate(timeout=60) for unit in (first, second)]
+        self.assertEqual([unit.returncode for unit in (first, second)], [0, 0], [e[-2000:] for _, e in said])
+        self.assertEqual([out.strip() for out, _ in said], ["[5001, 8006]", "[5002, 8007]"])
 
 
 class Said:
